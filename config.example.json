@@ -1,0 +1,26 @@
+{
+  "wifi": {
+    "ssid": "",
+    "password": ""
+  },
+  "cloud": {
+    "upload_url": "https://your-server.com/api/upload"
+  },
+  "device": {
+    "name": "BLE-Device",
+    "version": "1.0.0",
+    "description": "Linux BLE GATT Server for WiFi provisioning and camera control"
+  },
+  "camera": {
+    "device": "/dev/video0",
+    "resolution": "1280x720",
+    "format": "jpeg",
+    "quality": 95
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "/var/log/ble_device.log",
+    "max_size_mb": 10,
+    "backup_count": 3
+  }
+}

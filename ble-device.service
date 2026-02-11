@@ -1,0 +1,33 @@
+[Unit]
+Description=BLE Device Server - GATT Server for WiFi provisioning and camera control
+After=bluetooth.target network.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/ble_device/ble_device_server.py
+WorkingDirectory=/opt/ble_device
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=10
+
+# 安全配置
+User=root
+Group=root
+
+# 环境变量
+Environment="PYTHONUNBUFFERED=1"
+Environment="DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket"
+
+# 资源限制
+LimitNOFILE=65536
+CPUQuota=50%
+MemoryLimit=512M
+
+# 超时配置
+TimeoutStartSec=30
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
