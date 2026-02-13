@@ -82,10 +82,11 @@ sudo ./install.sh
 # 1. 安装系统依赖
 sudo apt update
 sudo apt install -y bluez python3 python3-pip python3-dbus \
-    python3-gi network-manager fswebcam v4l-utils
+    python3-gi network-manager fswebcam v4l-utils libcairo2-dev pkg-config 
 
 # 2. 安装 Python 依赖
-pip3 install --break-system-packages -r requirements.txt
+sudo pip3 install --upgrade pip setuptools wheel
+sudo pip3 install --break-system-packages -r requirements.txt
 
 # 3. 复制文件到安装目录
 sudo mkdir -p /opt/ble_device
