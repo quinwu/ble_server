@@ -4,7 +4,7 @@
 import logging
 from enum import Enum
 from typing import Callable, Optional
-from threading import Lock
+from threading import RLock
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +40,8 @@ class StateMachine:
         self._wifi_state = WiFiState.UNCONFIGURED
         self._device_state = DeviceState.IDLE
         
-        # 线程锁
-        self._lock = Lock()
+        # 线程锁（使用 RLock 避免死锁）
+        self._lock = RLock()
         
         # 状态变化回调
         self._ble_callbacks = []
@@ -85,18 +85,28 @@ class StateMachine:
     
     def set_wifi_state(self, new_state: WiFiState) -> None:
         """设置 WiFi 状态"""
+        logger.info(f"set_wifi_state 开始，新状态: {new_state.value}")
+        logger.info(f"准备获取锁...")
         with self._lock:
+            logger.info(f"锁已获取，当前状态: {self._wifi_state.value}")
             if self._wifi_state != new_state:
                 old_state = self._wifi_state
                 self._wifi_state = new_state
                 logger.info(f"WiFi 状态变化: {old_state.value} -> {new_state.value}")
                 
                 # 触发回调
-                for callback in self._wifi_callbacks:
+                logger.info(f"准备触发 {len(self._wifi_callbacks)} 个回调")
+                for i, callback in enumerate(self._wifi_callbacks):
                     try:
+                        logger.info(f"触发回调 {i+1}/{len(self._wifi_callbacks)}")
                         callback(old_state, new_state)
+                        logger.info(f"回调 {i+1}/{len(self._wifi_callbacks)} 完成")
                     except Exception as e:
-                        logger.error(f"WiFi 状态回调错误: {e}")
+                        logger.error(f"WiFi 状态回调错误: {e}", exc_info=True)
+                logger.info(f"所有回调完成")
+            else:
+                logger.info(f"状态未变化，跳过回调")
+        logger.info(f"set_wifi_state 完成，释放锁")
     
     def on_wifi_state_change(self, callback: Callable) -> None:
         """注册 WiFi 状态变化回调"""
@@ -133,8 +143,18 @@ class StateMachine:
     
     def is_ready_for_capture(self) -> bool:
         """是否可以执行拍照（WiFi 已连接 + 设备空闲）"""
-        return (self.wifi_state == WiFiState.CONNECTED and 
-                self.device_state == DeviceState.IDLE)
+        logger.info("is_ready_for_capture 开始")
+        try:
+            wifi = self.wifi_state
+            logger.info(f"wifi_state 获取: {wifi}")
+            device = self.device_state
+            logger.info(f"device_state 获取: {device}")
+            result = (wifi == WiFiState.CONNECTED and device == DeviceState.IDLE)
+            logger.info(f"is_ready_for_capture 结果: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"is_ready_for_capture 异常: {e}", exc_info=True)
+            return False
     
     def is_ble_ready(self) -> bool:
         """BLE 是否就绪（已连接或已认证）"""
@@ -142,12 +162,31 @@ class StateMachine:
     
     def get_status_dict(self) -> dict:
         """获取完整状态字典（用于 Notify）"""
-        return {
-            "ble_state": self.ble_state.value,
-            "wifi_state": self.wifi_state.value,
-            "device_state": self.device_state.value,
-            "ready_for_capture": self.is_ready_for_capture()
-        }
+        logger.info("get_status_dict 开始")
+        try:
+            logger.info("准备获取 ble_state")
+            ble_state = self.ble_state.value
+            logger.info(f"ble_state 获取完成: {ble_state}")
+            logger.info("准备获取 wifi_state")
+            wifi_state = self.wifi_state.value
+            logger.info(f"wifi_state 获取完成: {wifi_state}")
+            logger.info("准备获取 device_state")
+            device_state = self.device_state.value
+            logger.info(f"device_state 获取完成: {device_state}")
+            logger.info("准备调用 is_ready_for_capture()")
+            ready = self.is_ready_for_capture()
+            logger.info(f"is_ready_for_capture() 完成: {ready}")
+            result = {
+                "ble_state": ble_state,
+                "wifi_state": wifi_state,
+                "device_state": device_state,
+                "ready_for_capture": ready
+            }
+            logger.info(f"get_status_dict 完成: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"get_status_dict 异常: {e}", exc_info=True)
+            raise
 
 
 if __name__ == "__main__":

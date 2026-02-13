@@ -200,11 +200,12 @@ class WiFiConfigCharacteristic(Characteristic):
             
             config = json.loads(value_str)
             ssid = config.get("ssid", "")
-            password = config.get("password", "")
+            password = config.get("psk", config.get("password", ""))
             
             if not ssid:
                 raise ValueError("SSID 不能为空")
             
+            logger.info(f"触发回调: {ssid}, {password}")
             # 触发回调
             if self.on_wifi_config:
                 self.on_wifi_config(ssid, password)

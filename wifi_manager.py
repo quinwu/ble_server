@@ -151,28 +151,84 @@ class WiFiManager:
     
     def _is_connection_exists(self, ssid: str) -> bool:
         """检查连接配置是否存在"""
+        return self._get_connection_name(ssid) is not None
+    
+    def _get_connection_name(self, ssid: str) -> Optional[str]:
+        """根据 SSID 获取连接名称"""
         try:
+            # 获取所有 WiFi 连接配置
             result = subprocess.run(
+                ["nmcli", "-t", "-f", "NAME,802-11-wireless.ssid", "connection", "show"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode != 0:
+                return None
+            
+            # 解析输出，查找匹配的 SSID
+            for line in result.stdout.strip().split('\n'):
+                if not line:
+                    continue
+                parts = line.split(':')
+                if len(parts) >= 2:
+                    conn_name = parts[0]
+                    conn_ssid = parts[1] if len(parts) > 1 else ""
+                    if conn_ssid == ssid:
+                        return conn_name
+            
+            # 如果没找到，尝试直接使用 SSID 作为连接名称（向后兼容）
+            # 某些情况下连接名称就是 SSID
+            name_result = subprocess.run(
                 ["nmcli", "-t", "-f", "NAME", "connection", "show"],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
-            return ssid in result.stdout
+            if name_result.returncode == 0 and ssid in name_result.stdout:
+                return ssid
+            
+            return None
+            
         except Exception as e:
-            logger.error(f"检查连接异常: {e}")
-            return False
+            logger.error(f"获取连接名称异常: {e}")
+            return None
     
     def _activate_connection(self, ssid: str) -> bool:
         """激活已存在的连接"""
         try:
+            # 首先获取连接名称（可能和 SSID 不同）
+            connection_name = self._get_connection_name(ssid)
+            if not connection_name:
+                logger.error(f"未找到 SSID '{ssid}' 对应的连接配置")
+                return False
+            
+            logger.debug(f"激活连接: {connection_name} (SSID: {ssid})")
             result = subprocess.run(
-                ["nmcli", "connection", "up", ssid],
+                ["nmcli", "connection", "up", connection_name],
                 capture_output=True,
                 text=True,
                 timeout=30
             )
-            return result.returncode == 0
+            
+            if result.returncode == 0:
+                # 等待连接建立（最多等待 5 秒）
+                for _ in range(10):
+                    time.sleep(0.5)
+                    status = self.get_status()
+                    if status["connected"] and status["ssid"] == ssid:
+                        logger.info(f"连接已激活: {ssid}")
+                        return True
+                logger.warning(f"连接激活命令成功，但未检测到连接状态: {ssid}")
+                return False
+            else:
+                logger.error(f"激活连接失败: {result.stderr.strip()}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"激活连接超时: {ssid}")
+            return False
         except Exception as e:
             logger.error(f"激活连接异常: {e}")
             return False
