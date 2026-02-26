@@ -272,11 +272,13 @@ class CaptureCommandCharacteristic(Characteristic):
             
             command = json.loads(value_str)
             cmd = command.get("command", "")
+            file_batch = command.get("file_batch", "")
+            authorization = command.get("authorization", "")
             
             if cmd == "capture":
-                # 触发回调
+                # 触发回调，传递 file_batch 和 authorization
                 if self.on_capture:
-                    self.on_capture()
+                    self.on_capture(file_batch, authorization)
             else:
                 raise ValueError(f"未知指令: {cmd}")
             
@@ -404,6 +406,9 @@ class BLEGattServer:
         self.on_cloud_config = on_cloud_config
         self.on_capture = on_capture
         
+        # 缓存 MAC 地址
+        self._mac_address = None
+        
         # 创建 Application
         self.app = Application(self.bus)
         
@@ -509,6 +514,33 @@ class BLEGattServer:
                 return o
         
         return None
+    
+    def get_device_mac_address(self) -> str:
+        """获取蓝牙设备的 MAC 地址（带缓存）"""
+        if self._mac_address is not None:
+            return self._mac_address
+        
+        try:
+            adapter_path = self._find_adapter()
+            if not adapter_path:
+                logger.warning("未找到蓝牙适配器，使用默认 MAC 地址")
+                self._mac_address = "000000000000"
+                return self._mac_address
+            
+            adapter_props = dbus.Interface(
+                self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path),
+                DBUS_PROP_IFACE
+            )
+            mac_address = adapter_props.Get("org.bluez.Adapter1", "Address")
+            # 移除 MAC 地址中的冒号
+            mac_address = mac_address.replace(":", "")
+            self._mac_address = mac_address
+            logger.debug(f"获取到蓝牙 MAC 地址: {mac_address}")
+            return self._mac_address
+        except Exception as e:
+            logger.error(f"获取蓝牙 MAC 地址失败: {e}")
+            self._mac_address = "000000000000"
+            return self._mac_address
     
     def _register_app_reply(self):
         logger.info("GATT Application 注册回调成功")

@@ -168,7 +168,7 @@ sudo systemctl disable ble-device
 
 ```json
 {
-  "upload_url": "https://your-server.com/api/upload"
+  "upload_url": "https://wxgytech.com/hair-test/api/img/upload"
 }
 ```
 
@@ -187,7 +187,9 @@ sudo systemctl disable ble-device
 
 ```json
 {
-  "command": "capture"
+  "command": "capture",
+  "file_batch": "10001",
+  "authorization":"Bearer test"
 }
 ```
 

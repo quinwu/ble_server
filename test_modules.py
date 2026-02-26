@@ -124,16 +124,25 @@ def test_uploader():
         # 设置测试 URL（httpbin 提供的测试接口）
         assert uploader.set_upload_url("https://httpbin.org/post")
         
-        # 创建测试文件
+        # 创建测试文件并转换为 base64
         test_file = Path("/tmp/test_upload.jpg")
         test_file.write_bytes(b"fake image data for testing")
         
-        # 测试上传
-        success = uploader.upload(
-            str(test_file),
-            metadata={"test": "data"},
-            retry_times=1
-        )
+        import base64
+        with open(test_file, 'rb') as f:
+            file_data = base64.b64encode(f.read()).decode('utf-8')
+        
+        # 测试上传（使用新的格式）
+        metadata = {
+            "file_name": "test_upload.jpg",
+            "file_area": 1,
+            "file_batch": "test_batch",
+            "device_id": "test-001",
+            "camera_device": "/dev/video0",
+            "file_data": file_data
+        }
+        
+        success = uploader.upload(metadata, retry_times=1)
         
         # 清理
         test_file.unlink(missing_ok=True)

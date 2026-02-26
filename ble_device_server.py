@@ -9,6 +9,7 @@ import logging
 import signal
 import time
 import subprocess
+import base64
 from pathlib import Path
 from threading import Thread
 from datetime import datetime
@@ -134,8 +135,8 @@ class BLEDeviceServer:
             logger.error(f"云端配置处理失败: {e}")
             self._notify_error("cloud_config_failed", str(e))
     
-    def _on_capture_command(self):
-        logger.info("收到拍照指令")
+    def _on_capture_command(self, file_batch: str = "", authorization: str = ""):
+        logger.info(f"收到拍照指令，file_batch: {file_batch}")
         
         # 检查是否可以拍照
         if not self.state_machine.is_ready_for_capture():
@@ -148,7 +149,7 @@ class BLEDeviceServer:
             return
         
         # 异步执行拍照
-        Thread(target=self._do_capture, daemon=True).start()
+        Thread(target=self._do_capture, args=(file_batch, authorization), daemon=True).start()
     
     # ==================== 状态变化回调 ====================
     
@@ -216,7 +217,7 @@ class BLEDeviceServer:
         except Exception as e:
             logger.error(f"云端连接测试异常: {e}")
     
-    def _do_capture(self):
+    def _do_capture(self, file_batch: str = "", authorization: str = ""):
         try:
             # 设置状态为拍照中
             self.state_machine.set_device_state(DeviceState.CAPTURING)
@@ -273,25 +274,43 @@ class BLEDeviceServer:
             device_info = self.config.get_device_info()
             upload_results = {}
             
-            for device, photo_path in success_results.items():
+            # 获取蓝牙设备 MAC 地址
+            device_id = self.ble_server.get_device_mac_address()
+            
+            # 按设备序号上传（从1开始）
+            for index, (device, photo_path) in enumerate(success_results.items(), start=1):
                 try:
+                    # 读取文件并转换为 base64
+                    file_data = ""
+                    try:
+                        with open(photo_path, 'rb') as f:
+                            file_data = base64.b64encode(f.read()).decode('utf-8')
+                    except Exception as e:
+                        logger.error(f"读取文件失败 {photo_path}: {e}")
+                        upload_results[device] = False
+                        continue
+                    
+                    # 构建新的 metadata 格式
+                    photo_file = Path(photo_path)
                     metadata = {
-                        "device_name": device_info.get("name", ""),
-                        "device_version": device_info.get("version", ""),
+                        "file_name": photo_file.name,
+                        "file_area": index,
+                        "file_batch": file_batch if file_batch else "",
+                        "device_id": device_id,
                         "camera_device": device,
-                        "timestamp": time.time()
+                        "file_data": file_data
                     }
                     
-                    upload_success = self.uploader.upload(photo_path, metadata=metadata)
+                    upload_success = self.uploader.upload(metadata, authorization=authorization)
                     upload_results[device] = upload_success
                     
                     if upload_success:
-                        logger.info(f"设备 {device} 上传成功: {photo_path}")
+                        logger.info(f"设备 {device} (序号 {index}) 上传成功: {photo_path}")
                     else:
-                        logger.warning(f"设备 {device} 上传失败: {photo_path}")
+                        logger.warning(f"设备 {device} (序号 {index}) 上传失败: {photo_path}")
                         
                 except Exception as e:
-                    logger.error(f"设备 {device} 上传异常: {e}")
+                    logger.error(f"设备 {device} 上传异常: {e}", exc_info=True)
                     upload_results[device] = False
             
             # 检查上传结果

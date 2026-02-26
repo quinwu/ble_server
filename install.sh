@@ -28,7 +28,7 @@ SERVICE_FILE="/etc/systemd/system/ble-device.service"
 echo -e "${GREEN}[1/7] 检查系统依赖...${NC}"
 
 # 检查并安装系统包
-REQUIRED_PACKAGES="bluez python3 python3-pip python3-dbus python3-gi network-manager"
+REQUIRED_PACKAGES="bluez python3 python3-pip python3-dbus python3-gi network-manager fswebcam v4l-utils libcairo2-dev pkg-config"
 for package in $REQUIRED_PACKAGES; do
     if ! dpkg -l | grep -q "^ii  $package "; then
         echo "安装 $package..."
@@ -73,6 +73,7 @@ echo -e "${GREEN}[4/7] 安装 Python 依赖...${NC}"
 
 # 安装 Python 包
 cd "$INSTALL_DIR"
+pip3 install --upgrade pip setuptools wheel
 pip3 install --break-system-packages -r requirements.txt || \
     pip3 install -r requirements.txt
 

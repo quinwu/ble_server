@@ -4,6 +4,7 @@
 import requests
 import logging
 import time
+import json
 from pathlib import Path
 from typing import Optional, Dict
 from urllib.parse import urlparse
@@ -43,17 +44,17 @@ class CloudUploader:
     
     def upload(
         self,
-        filepath: str,
-        metadata: Optional[Dict] = None,
+        metadata: Dict,
+        authorization: str = "",
         retry_times: int = 3,
         retry_delay: int = 2
     ) -> bool:
         """
-        上传图片到云端
+        上传数据到云端（标准 POST 请求）
         
         Args:
-            filepath: 图片文件路径
-            metadata: 附加元数据（如设备 ID、时间戳等）
+            metadata: 包含所有上传数据的字典，必须包含 file_data（base64编码的文件数据）
+            authorization: Authorization header 值（可选）
             retry_times: 重试次数
             retry_delay: 重试延迟（秒）
             
@@ -64,44 +65,43 @@ class CloudUploader:
             logger.error("上传 URL 未配置")
             return False
         
-        file_path = Path(filepath)
-        if not file_path.exists():
-            logger.error(f"文件不存在: {filepath}")
+        if not metadata:
+            logger.error("metadata 不能为空")
             return False
         
-        logger.info(f"开始上传: {filepath} -> {self.upload_url}")
+        file_name = metadata.get("file_name", "unknown.jpg")
+        logger.info(f"开始上传: {file_name} -> {self.upload_url}")
         
         for attempt in range(retry_times):
             try:
-                # 准备文件
-                with open(file_path, 'rb') as f:
-                    files = {
-                        'file': (file_path.name, f, 'image/jpeg')
-                    }
-                    
-                    # 准备表单数据
-                    data = metadata or {}
-                    data['filename'] = file_path.name
-                    data['size'] = file_path.stat().st_size
-                    
-                    # 发送请求
-                    response = self.session.post(
-                        self.upload_url,
-                        files=files,
-                        data=data,
-                        timeout=self.timeout
+                # 设置请求头
+                headers = {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'BLE-Device-Uploader/1.0'
+                }
+                
+                # 如果提供了 authorization，添加到 headers
+                if authorization:
+                    headers['Authorization'] = authorization
+                
+                # 发送标准 POST 请求，metadata 作为 JSON body
+                response = self.session.post(
+                    self.upload_url,
+                    json=metadata,
+                    headers=headers,
+                    timeout=self.timeout
+                )
+                
+                # 检查响应
+                if response.status_code == 200:
+                    logger.info(f"上传成功: {file_name}")
+                    logger.debug(f"响应内容: {response.text[:200]}")
+                    return True
+                else:
+                    logger.warning(
+                        f"上传失败（状态码 {response.status_code}，"
+                        f"尝试 {attempt + 1}/{retry_times}）: {response.text[:200]}"
                     )
-                    
-                    # 检查响应
-                    if response.status_code == 200:
-                        logger.info(f"上传成功: {filepath}")
-                        logger.debug(f"响应内容: {response.text[:200]}")
-                        return True
-                    else:
-                        logger.warning(
-                            f"上传失败（状态码 {response.status_code}，"
-                            f"尝试 {attempt + 1}/{retry_times}）: {response.text[:200]}"
-                        )
                         
             except requests.exceptions.Timeout:
                 logger.warning(f"上传超时（尝试 {attempt + 1}/{retry_times}）")
@@ -246,12 +246,25 @@ if __name__ == "__main__":
     if uploader.test_connection():
         print("服务器连接正常")
     
-    # 创建测试文件
+    # 创建测试文件并转换为 base64
     test_file = Path("/tmp/test_image.jpg")
     test_file.write_bytes(b"fake image data for testing")
     
-    # 测试上传
-    if uploader.upload(str(test_file), metadata={"device_id": "test-001"}):
+    import base64
+    with open(test_file, 'rb') as f:
+        file_data = base64.b64encode(f.read()).decode('utf-8')
+    
+    # 测试上传（使用新的格式）
+    metadata = {
+        "file_name": "test_image.jpg",
+        "file_area": 1,
+        "file_batch": "test_batch",
+        "device_id": "test-001",
+        "camera_device": "/dev/video0",
+        "file_data": file_data
+    }
+    
+    if uploader.upload(metadata):
         print("上传成功")
     else:
         print("上传失败")
