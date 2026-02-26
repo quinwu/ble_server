@@ -31,6 +31,9 @@ class ConfigManager:
             "device": {
                 "name": "BLE-Device",
                 "version": "1.0.0"
+            },
+            "camera": {
+                "card_type_filter": "USB Camera"
             }
         }
         
@@ -98,6 +101,21 @@ class ConfigManager:
     def get_device_info(self) -> Dict[str, str]:
         """获取设备信息"""
         return self.config.get("device", {})
+    
+    def get_camera_card_type_filter(self) -> Optional[str]:
+        """获取摄像头设备类型过滤"""
+        return self.config.get("camera", {}).get("card_type_filter")
+    
+    def set_camera_card_type_filter(self, card_type_filter: str) -> bool:
+        """设置摄像头设备类型过滤"""
+        try:
+            if "camera" not in self.config:
+                self.config["camera"] = {}
+            self.config["camera"]["card_type_filter"] = card_type_filter
+            return self.save()
+        except Exception as e:
+            logger.error(f"设置摄像头设备类型过滤失败: {e}")
+            return False
     
     def _deep_update(self, base_dict: Dict, update_dict: Dict) -> Dict:
         """深度更新字典"""

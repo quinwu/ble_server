@@ -8,8 +8,12 @@ import sys
 import logging
 import signal
 import time
+import subprocess
 from pathlib import Path
 from threading import Thread
+from datetime import datetime
+from typing import List, Dict, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config_manager import ConfigManager
 from state_machine import StateMachine, BLEState, WiFiState, DeviceState
@@ -28,10 +32,8 @@ class BLEDeviceServer:
         self.wifi_manager = WiFiManager(
             state_callback=self._on_wifi_state_change
         )
-        self.camera = CameraController(
-            device="/dev/video0",
-            save_dir="/tmp/ble_device_captures"
-        )
+        self.camera_save_dir = "/tmp/ble_device_captures"
+        Path(self.camera_save_dir).mkdir(parents=True, exist_ok=True)
         self.uploader = CloudUploader(
             upload_url=self.config.get_cloud_url()
         )
@@ -222,17 +224,43 @@ class BLEDeviceServer:
             # 通知开始拍照
             self._notify_status({"event": "capture_start"})
             
-            # 拍照
-            photo_path = self.camera.capture()
-            if not photo_path:
-                raise Exception("拍照失败")
+            # 获取摄像头设备类型过滤配置（默认为 "USB Camera"）
+            card_type_filter = self.config.get_camera_card_type_filter()
+            if not card_type_filter:
+                card_type_filter = "USB Camera"
             
-            logger.info(f"拍照成功: {photo_path}")
+            logger.info(f"使用设备类型过滤: {card_type_filter}")
+            
+            # 检测符合条件的设备
+            devices = self._detect_camera_devices(card_type_filter)
+            
+            if not devices:
+                raise Exception(f"未找到符合条件的摄像头设备 (过滤条件: {card_type_filter})")
+            
+            logger.info(f"检测到 {len(devices)} 个设备，开始同时拍照")
+            
+            # 多设备同时拍照
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            results = self._capture_multiple_devices(
+                devices=devices,
+                timestamp=timestamp
+            )
+            
+            # 检查结果
+            success_results = {k: v for k, v in results.items() if v is not None}
+            failed_devices = [k for k, v in results.items() if v is None]
+            
+            if not success_results:
+                raise Exception(f"所有设备拍照失败。失败设备: {failed_devices}")
+            
+            logger.info(f"多设备拍照完成: {len(success_results)}/{len(results)} 成功")
             
             # 通知拍照完成
             self._notify_status({
                 "event": "capture_success",
-                "file": Path(photo_path).name
+                "success_count": len(success_results),
+                "total_count": len(results),
+                "files": [Path(v).name for v in success_results.values()]
             })
             
             # 设置状态为上传中
@@ -241,21 +269,43 @@ class BLEDeviceServer:
             # 通知开始上传
             self._notify_status({"event": "upload_start"})
             
-            # 上传到云端
+            # 上传所有成功的照片到云端
             device_info = self.config.get_device_info()
-            metadata = {
-                "device_name": device_info.get("name", ""),
-                "device_version": device_info.get("version", ""),
-                "timestamp": time.time()
-            }
+            upload_results = {}
             
-            upload_success = self.uploader.upload(photo_path, metadata=metadata)
+            for device, photo_path in success_results.items():
+                try:
+                    metadata = {
+                        "device_name": device_info.get("name", ""),
+                        "device_version": device_info.get("version", ""),
+                        "camera_device": device,
+                        "timestamp": time.time()
+                    }
+                    
+                    upload_success = self.uploader.upload(photo_path, metadata=metadata)
+                    upload_results[device] = upload_success
+                    
+                    if upload_success:
+                        logger.info(f"设备 {device} 上传成功: {photo_path}")
+                    else:
+                        logger.warning(f"设备 {device} 上传失败: {photo_path}")
+                        
+                except Exception as e:
+                    logger.error(f"设备 {device} 上传异常: {e}")
+                    upload_results[device] = False
             
-            if upload_success:
-                logger.info("上传成功")
-                self._notify_status({"event": "upload_success"})
+            # 检查上传结果
+            success_uploads = sum(1 for v in upload_results.values() if v)
+            
+            if success_uploads > 0:
+                logger.info(f"上传完成: {success_uploads}/{len(upload_results)} 成功")
+                self._notify_status({
+                    "event": "upload_success",
+                    "success_count": success_uploads,
+                    "total_count": len(upload_results)
+                })
             else:
-                raise Exception("上传失败")
+                raise Exception("所有照片上传失败")
             
         except Exception as e:
             logger.error(f"拍照/上传失败: {e}")
@@ -266,6 +316,112 @@ class BLEDeviceServer:
             # 恢复空闲状态
             if self.state_machine.device_state != DeviceState.ERROR:
                 self.state_machine.set_device_state(DeviceState.IDLE)
+    
+    def _detect_camera_devices(self, card_type_filter: Optional[str] = None) -> List[str]:
+        """
+        检测所有可用的视频设备
+        
+        Args:
+            card_type_filter: 设备类型过滤（如 "USB Camera"），None 表示不过滤
+            
+        Returns:
+            List[str]: 设备路径列表
+        """
+        devices = []
+        video_devices = list(Path("/dev").glob("video*"))
+        
+        if not video_devices:
+            logger.debug("未找到视频设备")
+            return devices
+        
+        for dev in video_devices:
+            dev_str = str(dev)
+            try:
+                result = subprocess.run(
+                    ["v4l2-ctl", "-d", dev_str, "--info"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
+                
+                if result.returncode != 0:
+                    continue
+                
+                # 解析设备信息
+                card_type = None
+                
+                for line in result.stdout.split('\n'):
+                    if 'Card type' in line:
+                        card_type = line.split(':', 1)[1].strip()
+                        break
+                
+                # 如果指定了过滤条件，检查是否匹配
+                if card_type_filter:
+                    if card_type_filter.lower() not in (card_type or "").lower():
+                        continue
+                
+                devices.append(dev_str)
+                logger.debug(f"检测到设备: {dev_str} ({card_type})")
+                
+            except subprocess.TimeoutExpired:
+                logger.debug(f"检测设备 {dev_str} 超时")
+                continue
+            except Exception as e:
+                logger.debug(f"检测设备 {dev_str} 异常: {e}")
+                continue
+        
+        logger.info(f"检测到 {len(devices)} 个符合条件的设备")
+        return devices
+    
+    def _capture_multiple_devices(
+        self,
+        devices: List[str],
+        timestamp: str
+    ) -> Dict[str, Optional[str]]:
+        """
+        同时从多个设备拍摄照片
+        
+        Args:
+            devices: 设备列表
+            timestamp: 时间戳（用于生成文件名）
+            
+        Returns:
+            Dict[str, Optional[str]]: 设备路径 -> 照片文件路径的映射，失败为 None
+        """
+        results = {}
+        
+        def capture_single_device(device: str) -> tuple:
+            """单个设备拍照的包装函数"""
+            try:
+                # 生成文件名
+                filename = f"capture_{device.replace('/', '_')}_{timestamp}.jpg"
+                
+                # 创建控制器实例（每个设备一个实例）
+                controller = CameraController(device=device, save_dir=self.camera_save_dir)
+                photo_path = controller.capture(filename=filename)
+                
+                return (device, photo_path)
+            except Exception as e:
+                logger.error(f"设备 {device} 拍照异常: {e}", exc_info=True)
+                return (device, None)
+        
+        # 使用线程池并行拍摄
+        with ThreadPoolExecutor(max_workers=len(devices)) as executor:
+            futures = {
+                executor.submit(capture_single_device, device): device
+                for device in devices
+            }
+            
+            for future in as_completed(futures):
+                device, photo_path = future.result()
+                results[device] = photo_path
+                
+                if photo_path:
+                    logger.info(f"设备 {device} 拍照成功: {photo_path}")
+                else:
+                    logger.warning(f"设备 {device} 拍照失败")
+        
+        return results
     
     def _notify_status(self, status_dict: dict):
         try:
@@ -304,7 +460,7 @@ def setup_logging(log_file: str = "/var/log/ble_device.log"):
         print(f"警告: 无法创建日志文件 {log_file}: {e}")
     
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format=log_format,
         handlers=handlers
     )

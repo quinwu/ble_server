@@ -142,36 +142,126 @@ class CameraController:
             return False
     
     def _capture_with_v4l2(self, filepath: Path) -> bool:
-        """使用 v4l2-ctl 拍照"""
+        """使用 v4l2-ctl 拍照，支持多种方法"""
         try:
-            # 设置格式
-            subprocess.run([
-                "v4l2-ctl",
-                "-d", self.device,
-                "--set-fmt-video=width=1280,height=720,pixelformat=MJPG"
-            ], capture_output=True, timeout=5)
+            # 解析实际设备路径（如果是符号链接）
+            actual_device = self._resolve_device_path(self.device)
             
-            # 拍照
-            result = subprocess.run([
-                "v4l2-ctl",
-                "-d", self.device,
-                "--stream-mmap",
-                "--stream-count=1",
-                f"--stream-to={filepath}"
-            ], capture_output=True, text=True, timeout=15)
+            # 尝试设置格式（优先使用 MJPG，因为它是压缩格式）
+            # 如果设备已经设置了合适的格式，这一步可能会失败，但不影响后续拍照
+            format_set = False
+            for pixelformat in ["MJPG", "YUYV"]:
+                fmt_result = subprocess.run([
+                    "v4l2-ctl",
+                    "-d", actual_device,
+                    f"--set-fmt-video=width=1280,height=720,pixelformat={pixelformat}"
+                ], capture_output=True, timeout=5)
+                
+                if fmt_result.returncode == 0:
+                    logger.debug(f"格式设置成功: {pixelformat}")
+                    format_set = True
+                    break
             
-            if result.returncode != 0:
-                logger.error(f"v4l2-ctl 错误: {result.stderr}")
-                return False
+            if not format_set:
+                logger.debug("格式设置失败或已设置，继续尝试拍照")
             
-            return True
+            # 尝试多种 v4l2-ctl 拍照方法
+            capture_methods = [
+                (["--stream-mmap", "--stream-count=1", f"--stream-to={filepath}"], "stream-mmap"),
+                (["--stream-to", str(filepath), "--stream-count=1"], "stream-to"),
+                (["--stream-to", str(filepath)], "stream-to-simple"),
+            ]
+            
+            for capture_cmd, method_name in capture_methods:
+                logger.debug(f"尝试 v4l2-ctl 方法: {method_name}")
+                result = subprocess.run(
+                    ["v4l2-ctl", "-d", actual_device] + capture_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                
+                # 检查文件是否创建且大小大于0
+                if filepath.exists():
+                    size = filepath.stat().st_size
+                    if size > 0:
+                        logger.debug(f"v4l2-ctl {method_name} 拍照成功: {size} bytes")
+                        # 检查文件格式，如果是原始格式需要转换
+                        return self._convert_if_needed(filepath)
+                    else:
+                        logger.debug(f"v4l2-ctl {method_name} 文件大小为0")
+                        filepath.unlink(missing_ok=True)
+                elif result.returncode != 0:
+                    logger.debug(f"v4l2-ctl {method_name} 失败: {result.stderr[:100] if result.stderr else '未知错误'}")
+            
+            logger.error("所有 v4l2-ctl 方法都失败")
+            return False
             
         except subprocess.TimeoutExpired:
             logger.error("v4l2-ctl 拍照超时")
             return False
         except Exception as e:
-            logger.error(f"v4l2-ctl 拍照异常: {e}")
+            logger.error(f"v4l2-ctl 拍照异常: {e}", exc_info=True)
             return False
+    
+    def _resolve_device_path(self, device: str) -> str:
+        """解析设备路径（如果是符号链接，返回实际路径）"""
+        try:
+            dev_path = Path(device)
+            if dev_path.is_symlink():
+                resolved = dev_path.resolve()
+                logger.debug(f"设备 {device} 是符号链接，实际路径: {resolved}")
+                return str(resolved)
+        except Exception as e:
+            logger.debug(f"解析设备路径失败: {e}")
+        return device
+    
+    def _convert_if_needed(self, filepath: Path) -> bool:
+        """如果文件是原始格式（如 YUYV），转换为 JPEG"""
+        try:
+            # 先检查文件头，确认是否为 JPEG
+            with open(filepath, 'rb') as f:
+                header = f.read(2)
+                if header == b'\xff\xd8':  # JPEG 文件头
+                    logger.debug("文件已经是 JPEG 格式")
+                    return True
+            
+            # 如果不是 JPEG，检查文件大小判断是否为原始格式
+            size = filepath.stat().st_size
+            expected_raw_size = 1280 * 720 * 2  # YUYV 格式大小 (1280*720*2 bytes)
+            
+            # 如果文件大小接近原始格式大小，尝试转换
+            if size > expected_raw_size * 0.9 and size < expected_raw_size * 1.1:
+                logger.debug("检测到可能是原始格式 (YUYV)，尝试转换为 JPEG")
+                # 使用 ffmpeg 转换
+                if self._command_exists("ffmpeg"):
+                    temp_file = filepath.with_suffix(".tmp.jpg")
+                    result = subprocess.run([
+                        "ffmpeg",
+                        "-f", "rawvideo",
+                        "-pixel_format", "yuyv422",
+                        "-video_size", "1280x720",
+                        "-i", str(filepath),
+                        "-y",
+                        str(temp_file)
+                    ], capture_output=True, timeout=10)
+                    
+                    if result.returncode == 0 and temp_file.exists() and temp_file.stat().st_size > 0:
+                        filepath.unlink()
+                        temp_file.rename(filepath)
+                        logger.debug("原始格式转换成功")
+                        return True
+                    else:
+                        logger.warning("格式转换失败，使用原文件")
+                        if result.stderr:
+                            logger.debug(f"ffmpeg 错误: {result.stderr[:200]}")
+            
+            logger.warning(f"文件不是 JPEG 格式且无法转换，文件大小: {size} bytes")
+            return True  # 即使转换失败，也返回 True（文件已创建）
+            
+        except Exception as e:
+            logger.debug(f"格式检查/转换异常: {e}")
+            return True  # 即使转换失败，也返回 True（文件已创建）
     
     def _capture_with_opencv(self, filepath: Path) -> bool:
         """使用 OpenCV 拍照"""
@@ -212,7 +302,7 @@ if __name__ == "__main__":
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    camera = CameraController()
+    camera = CameraController(device="/dev/video51")
     
     # 测试摄像头
     if camera.test_camera():
