@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 class WiFiManager:
     """WiFi 管理器 - 使用 nmcli (NetworkManager) 进行配网"""
     
-    def __init__(self, state_callback: Optional[Callable] = None):
+    def __init__(self, state_callback: Optional[Callable] = None, status_report_callback: Optional[Callable] = None):
         self.state_callback = state_callback
+        self.status_report_callback = status_report_callback
         self._monitor_thread = None
         self._stop_event = Event()
         
@@ -531,7 +532,7 @@ class WiFiManager:
         """WiFi 连接监控循环"""
         consecutive_failures = 0
         # 等待5秒后开始监控
-        self._stop_event.wait(5)
+        self._stop_event.wait(2)
 
         while not self._stop_event.is_set():
             try:
@@ -561,11 +562,18 @@ class WiFiManager:
                             logger.error("无法重连：缺少 WiFi 配置信息")
                         consecutive_failures = 0
                 
+                # 定期通过 BLE 上报 WiFi 状态（即使状态未变化）
+                if self.status_report_callback:
+                    try:
+                        self.status_report_callback(status)
+                    except Exception as e:
+                        logger.error(f"WiFi 状态上报回调异常: {e}")
+                
             except Exception as e:
                 logger.error(f"WiFi 监控异常: {e}", exc_info=True)
             
-            # 每 10 秒检查一次
-            self._stop_event.wait(10)
+            # 每 30 秒检查一次
+            self._stop_event.wait(30)
     
     def _update_state(self, state: WiFiState) -> None:
         """更新 WiFi 状态"""

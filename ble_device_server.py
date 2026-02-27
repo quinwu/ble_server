@@ -31,7 +31,8 @@ class BLEDeviceServer:
         self.config = ConfigManager(config_dir)
         self.state_machine = StateMachine()
         self.wifi_manager = WiFiManager(
-            state_callback=self._on_wifi_state_change
+            state_callback=self._on_wifi_state_change,
+            status_report_callback=self._on_wifi_status_report
         )
         self.camera_save_dir = "/tmp/ble_device_captures"
         Path(self.camera_save_dir).mkdir(parents=True, exist_ok=True)
@@ -174,6 +175,29 @@ class BLEDeviceServer:
             status["wifi_ip"] = wifi_status.get("ip", "")
         
         self._notify_status(status)
+    
+    def _on_wifi_status_report(self, wifi_status: dict):
+        """WiFi 状态定期上报回调（即使状态未变化也会调用）"""
+        try:
+            # 根据连接状态确定 WiFi 状态
+            if wifi_status.get("connected", False):
+                wifi_state = WiFiState.CONNECTED.value
+            else:
+                wifi_state = WiFiState.DISCONNECTED.value
+            
+            status = {
+                "wifi_state": wifi_state,
+                "wifi_ssid": wifi_status.get("ssid", ""),
+                "wifi_ip": wifi_status.get("ip", ""),
+                "event": "wifi_status_report"
+            }
+            
+            # 通过 BLE 上报状态
+            self._notify_status(status)
+            logger.debug(f"WiFi 状态已通过 BLE 上报: {status}")
+            
+        except Exception as e:
+            logger.error(f"WiFi 状态上报异常: {e}", exc_info=True)
     
     def _on_device_state_change(self, old_state, new_state):
         logger.info(f"设备状态: {old_state.value} -> {new_state.value}")
