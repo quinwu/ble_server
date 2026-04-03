@@ -412,50 +412,42 @@ def main():
 
                 print("✗ ffmpeg 所有方法都失败")
 
-        # 尝试 v4l2-ctl 方法（对于非 Multiplanar 设备或作为最后尝试）
+        # 尝试 v4l2-ctl stream-mmap（对于非 Multiplanar 设备或作为最后尝试）
         if not is_mplane:
-            print("\n尝试方法: v4l2-ctl")
-            capture_methods = [
-                (["--stream-mmap", "--stream-count=1", f"--stream-to={test_image}"], "stream-mmap"),
-                (["--stream-to", test_image, "--stream-count=1"], "stream-to"),
-                (["--stream-to", test_image], "stream-to (simple)"),
-            ]
+            print("\n尝试方法: v4l2-ctl (stream-mmap)")
+            capture_cmd = ["--stream-mmap", "--stream-count=1", f"--stream-to={test_image}"]
+            desc = "stream-mmap"
+            try:
+                capture_result = subprocess.run(
+                    ["v4l2-ctl", "-d", actual_dev_str] + capture_cmd, capture_output=True, text=True, timeout=10
+                )
 
-            for capture_cmd, desc in capture_methods:
-                print(f"\n尝试: {desc}")
-                try:
-                    capture_result = subprocess.run(
-                        ["v4l2-ctl", "-d", actual_dev_str] + capture_cmd, capture_output=True, text=True, timeout=10
-                    )
+                print(f"返回码: {capture_result.returncode}")
+                if capture_result.stderr:
+                    print("错误输出:")
+                    print(capture_result.stderr[:200])
 
-                    print(f"返回码: {capture_result.returncode}")
-                    if capture_result.stderr:
-                        print("错误输出:")
-                        print(capture_result.stderr[:200])
-
-                    # 检查文件
-                    test_image_path = Path(test_image)
-                    if test_image_path.exists():
-                        try:
-                            size = test_image_path.stat().st_size
-                            if size > 0:
-                                print(f"✅ 拍照成功! 文件大小: {size} 字节")
-                                print(f"  文件保存在: {test_image}")
-                                success_list.append(
-                                    {"capture_cmd": capture_cmd, "desc": desc, "test_image": test_image}
-                                )
-                                break
-                            else:
-                                print(f"✗ 文件大小为 0")
-                                test_image_path.unlink()
-                        except Exception as e:
-                            print(f"✗ 检查文件大小失败: {e}")
-                    else:
-                        print("✗ 文件未创建")
-                except subprocess.TimeoutExpired:
-                    print(f"✗ 命令超时")
-                except Exception as e:
-                    print(f"✗ 异常: {e}")
+                test_image_path = Path(test_image)
+                if test_image_path.exists():
+                    try:
+                        size = test_image_path.stat().st_size
+                        if size > 0:
+                            print(f"✅ 拍照成功! 文件大小: {size} 字节")
+                            print(f"  文件保存在: {test_image}")
+                            success_list.append(
+                                {"capture_cmd": capture_cmd, "desc": desc, "test_image": test_image}
+                            )
+                        else:
+                            print("✗ 文件大小为 0")
+                            test_image_path.unlink()
+                    except Exception as e:
+                        print(f"✗ 检查文件大小失败: {e}")
+                else:
+                    print("✗ 文件未创建")
+            except subprocess.TimeoutExpired:
+                print("✗ 命令超时")
+            except Exception as e:
+                print(f"✗ 异常: {e}")
 
         if is_mplane:
             print("\n建议:")

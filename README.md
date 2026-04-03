@@ -82,7 +82,7 @@ sudo ./install.sh
 # 1. 安装系统依赖
 sudo apt update
 sudo apt install -y bluez python3 python3-pip python3-dbus \
-    python3-gi network-manager fswebcam v4l-utils libcairo2-dev pkg-config 
+    python3-gi network-manager fswebcam v4l-utils libcairo2-dev libdbus-1-dev pkg-config
 
 # 2. 安装 Python 依赖
 sudo pip3 install --upgrade pip setuptools wheel
@@ -99,6 +99,28 @@ sudo systemctl daemon-reload
 sudo systemctl enable ble-device
 sudo systemctl start ble-device
 ```
+
+### 3. PWM 补光（可选）
+
+**【获取高级权限】** 必须获取 root 权限（如 `sudo -s` 或 `su`），才能执行后续对 `/sys/class/pwm` 的写入。
+
+**【开启 PWM 补光】** 运行后补光灯会亮。以下为板级示例，若本机无对应 `pwmchip` 或编号不同，请按硬件实际调整。
+
+```bash
+cd /sys/class/pwm/pwmchip1
+echo 0 > export
+echo 1000000 > pwm0/period
+echo 700000 > pwm0/duty_cycle
+echo 1 > pwm0/enable
+
+cd /sys/class/pwm/pwmchip2
+echo 0 > export
+echo 1000000 > pwm0/period
+echo 700000 > pwm0/duty_cycle
+echo 1 > pwm0/enable
+```
+
+若 `pwm0` 已存在，`export` 可能报错，可跳过该步，直接设置 `period`、`duty_cycle`、`enable`。
 
 ---
 

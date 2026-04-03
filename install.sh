@@ -25,10 +25,10 @@ CONFIG_DIR="/var/lib/ble_device"
 LOG_DIR="/var/log"
 SERVICE_FILE="/etc/systemd/system/ble-device.service"
 
-echo -e "${GREEN}[1/7] 检查系统依赖...${NC}"
+echo -e "${GREEN}[1/8] 检查系统依赖...${NC}"
 
 # 检查并安装系统包
-REQUIRED_PACKAGES="bluez python3 python3-pip python3-dbus python3-gi network-manager fswebcam v4l-utils libcairo2-dev pkg-config"
+REQUIRED_PACKAGES="bluez python3 python3-pip python3-dbus python3-gi network-manager fswebcam v4l-utils libcairo2-dev libdbus-1-dev pkg-config"
 for package in $REQUIRED_PACKAGES; do
     if ! dpkg -l | grep -q "^ii  $package "; then
         echo "安装 $package..."
@@ -43,7 +43,7 @@ done
 echo "安装摄像头工具（可选）..."
 apt-get install -y fswebcam v4l-utils || echo "摄像头工具安装失败，可后续手动安装"
 
-echo -e "${GREEN}[2/7] 创建目录结构...${NC}"
+echo -e "${GREEN}[2/8] 创建目录结构...${NC}"
 
 # 创建必要目录
 mkdir -p "$INSTALL_DIR"
@@ -56,7 +56,7 @@ chmod 755 "$INSTALL_DIR"
 chmod 700 "$CONFIG_DIR"
 chmod 755 "/tmp/ble_device_captures"
 
-echo -e "${GREEN}[3/7] 复制程序文件...${NC}"
+echo -e "${GREEN}[3/8] 复制程序文件...${NC}"
 
 # 获取脚本所在目录
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -69,7 +69,7 @@ cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/"
 chmod 644 "$INSTALL_DIR"/*.py
 chmod 755 "$INSTALL_DIR/ble_device_server.py"
 
-echo -e "${GREEN}[4/7] 安装 Python 依赖...${NC}"
+echo -e "${GREEN}[4/8] 安装 Python 依赖...${NC}"
 
 # 安装 Python 包
 cd "$INSTALL_DIR"
@@ -77,7 +77,7 @@ pip3 install --upgrade pip setuptools wheel
 pip3 install --break-system-packages -r requirements.txt || \
     pip3 install -r requirements.txt
 
-echo -e "${GREEN}[5/7] 配置 systemd 服务...${NC}"
+echo -e "${GREEN}[5/8] 配置 systemd 服务...${NC}"
 
 # 复制并启用服务
 cp "$SCRIPT_DIR/ble-device.service" "$SERVICE_FILE"
@@ -86,7 +86,7 @@ chmod 644 "$SERVICE_FILE"
 # 重载 systemd
 systemctl daemon-reload
 
-echo -e "${GREEN}[6/7] 配置蓝牙...${NC}"
+echo -e "${GREEN}[6/8] 配置蓝牙...${NC}"
 
 # 确保蓝牙服务运行
 systemctl enable bluetooth
@@ -96,7 +96,33 @@ systemctl start bluetooth
 hciconfig hci0 up || echo "警告: 无法启用蓝牙适配器"
 hciconfig hci0 piscan || echo "警告: 无法设置蓝牙可发现模式"
 
-echo -e "${GREEN}[7/7] 启动服务...${NC}"
+echo -e "${GREEN}[7/8] PWM 补光（可选）...${NC}"
+
+# 【获取高级权限】本脚本以 root 运行，可写入 /sys/class/pwm
+# 【开启 PWM 补光】运行后灯光会亮；无对应 pwmchip 时跳过
+enable_pwm_chip() {
+    local chipdir="/sys/class/pwm/$1"
+    if [ ! -d "$chipdir" ]; then
+        echo "未找到 $chipdir，跳过"
+        return 0
+    fi
+    if [ ! -d "$chipdir/pwm0" ]; then
+        echo 0 > "$chipdir/export" 2>/dev/null || true
+    fi
+    if [ -d "$chipdir/pwm0" ]; then
+        echo 1000000 > "$chipdir/pwm0/period"
+        echo 700000 > "$chipdir/pwm0/duty_cycle"
+        echo 1 > "$chipdir/pwm0/enable"
+        echo "已启用 $1 的 PWM 补光"
+    else
+        echo "警告: $chipdir 下未出现 pwm0，跳过"
+    fi
+}
+
+enable_pwm_chip pwmchip1
+enable_pwm_chip pwmchip2
+
+echo -e "${GREEN}[8/8] 启动服务...${NC}"
 
 # 启用并启动服务
 systemctl enable ble-device.service
