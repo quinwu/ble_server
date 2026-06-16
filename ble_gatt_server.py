@@ -6,12 +6,15 @@ BLE GATT Server base on BlueZ D-Bus API
 
 import json
 import logging
+import time
 from typing import Callable, Optional
 
 import dbus
 import dbus.mainloop.glib
 import dbus.service
 from gi.repository import GLib
+
+from ble_json_buffer import MAX_WRITE_BUFFER_SIZE, WRITE_BUFFER_TIMEOUT_SEC, try_parse_complete_json
 
 logger = logging.getLogger(__name__)
 
@@ -167,93 +170,114 @@ class Characteristic(dbus.service.Object):
         logger.debug(f"Notify sent: {value[:50]}...")
 
 
-class WiFiConfigCharacteristic(Characteristic):
+class JsonWriteCharacteristic(Characteristic):
+    """Accumulate chunked BLE writes until a complete JSON object is received."""
+
+    def __init__(self, bus, index, uuid, service):
+        super().__init__(bus, index, uuid, ["write"], service)
+        self._write_buffer = bytearray()
+        self._last_write_at = 0.0
+
+    def WriteValue(self, value, options):
+        try:
+            self._accumulate_write(value)
+            config = try_parse_complete_json(self._write_buffer)
+            if config is None:
+                logger.debug(
+                    f"{self._config_label()} buffered {len(self._write_buffer)} bytes, waiting for more data"
+                )
+                return
+
+            value_str = self._write_buffer.decode("utf-8")
+            logger.info(f"收到 {self._config_label()}: {value_str}")
+            self._write_buffer.clear()
+            self._handle_json(config)
+
+        except json.JSONDecodeError as e:
+            self._write_buffer.clear()
+            logger.error(f"{self._config_label()} JSON 解析失败: {e}")
+            raise dbus.exceptions.DBusException("org.bluez.Error.InvalidValueLength", "Invalid JSON format")
+        except Exception as e:
+            self._write_buffer.clear()
+            logger.error(f"{self._config_label()} 处理失败: {e}")
+            raise dbus.exceptions.DBusException("org.bluez.Error.Failed", str(e))
+
+    def _accumulate_write(self, value) -> None:
+        now = time.time()
+        if self._write_buffer and now - self._last_write_at > WRITE_BUFFER_TIMEOUT_SEC:
+            logger.warning(f"{self._config_label()} write buffer timeout, discarding partial data")
+            self._write_buffer.clear()
+
+        self._write_buffer.extend(value)
+        self._last_write_at = now
+
+        if len(self._write_buffer) > MAX_WRITE_BUFFER_SIZE:
+            self._write_buffer.clear()
+            raise ValueError(f"Write data exceeds {MAX_WRITE_BUFFER_SIZE} bytes")
+
+    def _config_label(self) -> str:
+        return "JSON write"
+
+    def _handle_json(self, config: dict) -> None:
+        raise NotImplementedError
+
+
+class WiFiConfigCharacteristic(JsonWriteCharacteristic):
     def __init__(self, bus, index, service, on_wifi_config: Callable):
-        super().__init__(bus, index, CHAR_WIFI_CONFIG_UUID, ["write"], service)
+        super().__init__(bus, index, CHAR_WIFI_CONFIG_UUID, service)
         self.on_wifi_config = on_wifi_config
 
-    def WriteValue(self, value, options):
-        try:
-            # 解析 JSON
-            value_str = bytearray(value).decode("utf-8")
-            logger.info(f"收到 WiFi 配置: {value_str}")
+    def _config_label(self) -> str:
+        return "WiFi 配置"
 
-            config = json.loads(value_str)
-            ssid = config.get("ssid", "")
-            password = config.get("psk", config.get("password", ""))
+    def _handle_json(self, config: dict) -> None:
+        ssid = config.get("ssid", "")
+        password = config.get("psk", config.get("password", ""))
 
-            if not ssid:
-                raise ValueError("SSID 不能为空")
+        if not ssid:
+            raise ValueError("SSID 不能为空")
 
-            logger.info(f"触发回调: {ssid}, {password}")
-            # 触发回调
-            if self.on_wifi_config:
-                self.on_wifi_config(ssid, password)
-
-        except json.JSONDecodeError as e:
-            logger.error(f"WiFi 配置 JSON 解析失败: {e}")
-            raise dbus.exceptions.DBusException("org.bluez.Error.InvalidValueLength", "Invalid JSON format")
-        except Exception as e:
-            logger.error(f"WiFi 配置处理失败: {e}")
-            raise dbus.exceptions.DBusException("org.bluez.Error.Failed", str(e))
+        logger.info(f"触发回调: {ssid}, {password}")
+        if self.on_wifi_config:
+            self.on_wifi_config(ssid, password)
 
 
-class CloudConfigCharacteristic(Characteristic):
+class CloudConfigCharacteristic(JsonWriteCharacteristic):
     def __init__(self, bus, index, service, on_cloud_config: Callable):
-        super().__init__(bus, index, CHAR_CLOUD_CONFIG_UUID, ["write"], service)
+        super().__init__(bus, index, CHAR_CLOUD_CONFIG_UUID, service)
         self.on_cloud_config = on_cloud_config
 
-    def WriteValue(self, value, options):
-        try:
-            value_str = bytearray(value).decode("utf-8")
-            logger.info(f"收到云端配置: {value_str}")
+    def _config_label(self) -> str:
+        return "云端配置"
 
-            config = json.loads(value_str)
-            upload_url = config.get("upload_url", "")
+    def _handle_json(self, config: dict) -> None:
+        upload_url = config.get("upload_url", "")
 
-            if not upload_url:
-                raise ValueError("upload_url 不能为空")
+        if not upload_url:
+            raise ValueError("upload_url 不能为空")
 
-            # 触发回调
-            if self.on_cloud_config:
-                self.on_cloud_config(upload_url)
-
-        except json.JSONDecodeError as e:
-            logger.error(f"云端配置 JSON 解析失败: {e}")
-            raise dbus.exceptions.DBusException("org.bluez.Error.InvalidValueLength", "Invalid JSON format")
-        except Exception as e:
-            logger.error(f"云端配置处理失败: {e}")
-            raise dbus.exceptions.DBusException("org.bluez.Error.Failed", str(e))
+        if self.on_cloud_config:
+            self.on_cloud_config(upload_url)
 
 
-class CaptureCommandCharacteristic(Characteristic):
+class CaptureCommandCharacteristic(JsonWriteCharacteristic):
     def __init__(self, bus, index, service, on_capture: Callable):
-        super().__init__(bus, index, CHAR_CAPTURE_COMMAND_UUID, ["write"], service)
+        super().__init__(bus, index, CHAR_CAPTURE_COMMAND_UUID, service)
         self.on_capture = on_capture
 
-    def WriteValue(self, value, options):
-        try:
-            value_str = bytearray(value).decode("utf-8")
-            logger.info(f"收到拍照指令: {value_str}")
+    def _config_label(self) -> str:
+        return "拍照指令"
 
-            command = json.loads(value_str)
-            cmd = command.get("command", "")
-            file_batch = command.get("file_batch", "")
-            authorization = command.get("authorization", "")
+    def _handle_json(self, config: dict) -> None:
+        cmd = config.get("command", "")
+        file_batch = config.get("file_batch", "")
+        authorization = config.get("authorization", "")
 
-            if cmd == "capture":
-                # 触发回调，传递 file_batch 和 authorization
-                if self.on_capture:
-                    self.on_capture(file_batch, authorization)
-            else:
-                raise ValueError(f"未知指令: {cmd}")
-
-        except json.JSONDecodeError as e:
-            logger.error(f"拍照指令 JSON 解析失败: {e}")
-            raise dbus.exceptions.DBusException("org.bluez.Error.InvalidValueLength", "Invalid JSON format")
-        except Exception as e:
-            logger.error(f"拍照指令处理失败: {e}")
-            raise dbus.exceptions.DBusException("org.bluez.Error.Failed", str(e))
+        if cmd == "capture":
+            if self.on_capture:
+                self.on_capture(file_batch, authorization)
+        else:
+            raise ValueError(f"未知指令: {cmd}")
 
 
 class StatusNotifyCharacteristic(Characteristic):
