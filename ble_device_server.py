@@ -198,18 +198,56 @@ class BLEDeviceServer:
 
     # ==================== 内部方法 ====================
 
-    def _init_wifi(self):
-        """初始化 WiFi（开机自动连接）"""
-        wifi_config = self.config.get_wifi_config()
-        ssid = wifi_config.get("ssid", "")
-        password = wifi_config.get("password", "")
+    # def _init_wifi(self):
+    #     """初始化 WiFi（开机自动连接）"""
+    #     wifi_config = self.config.get_wifi_config()
+    #     ssid = wifi_config.get("ssid", "")
+    #     password = wifi_config.get("password", "")
 
-        if ssid and password:
-            logger.info(f"检测到已保存的 WiFi 配置: {ssid}")
-            Thread(target=self._connect_wifi, args=(ssid, password), daemon=True).start()
+    #     if ssid and password:
+    #         logger.info(f"检测到已保存的 WiFi 配置: {ssid}")
+    #         Thread(target=self._connect_wifi, args=(ssid, password), daemon=True).start()
+    #     else:
+    #         logger.info("未检测到 WiFi 配置")
+    #         self.state_machine.set_wifi_state(WiFiState.UNCONFIGURED)
+
+    def _init_wifi(self):
+        """初始化 WiFi：仅检测状态并启动监控，不主动发起连接"""
+        
+        # 1. 获取当前系统的真实 WiFi 状态
+        status = self.wifi_manager.get_status()
+        is_connected = status.get("connected", False)
+        ssid = status.get("ssid", "")
+        ip = status.get("ip", "")
+
+        if is_connected:
+            logger.info(f"检测到系统已自动连接 WiFi: {ssid} ({ip})")
+            
+            # 2. 同步状态机为 CONNECTED
+            # 注意：这里直接设置，避免触发不必要的重连逻辑
+            self.state_machine.set_wifi_state(WiFiState.CONNECTED)
+            
+            # 3. 立即发送一次初始状态给小程序
+            self._notify_status({
+                "wifi_state": "connected",
+                "wifi_ssid": ssid,
+                "wifi_ip": ip
+            })
         else:
-            logger.info("未检测到 WiFi 配置")
-            self.state_machine.set_wifi_state(WiFiState.UNCONFIGURED)
+            logger.info("系统当前未连接 WiFi，等待配网或自动重连...")
+            # 如果没连上，根据是否有保存配置决定显示 UNCONFIGURED 还是 DISCONNECTED
+            wifi_config = self.config.get_wifi_config()
+            # if wifi_config.get("ssid"):
+            #     self.state_machine.set_wifi_state(WiFiState.DISCONNECTED)
+            #     self._notify_status({"wifi_state": "disconnected"})
+            # else:
+            #     self.state_machine.set_wifi_state(WiFiState.UNCONFIGURED)
+            self._notify_status({"wifi_state": "unconfigured"})
+
+        # 4. 【关键】无论是否连上，都启动监控线程
+        # 这样如果后续网络断开或重新连上，监控线程都能检测到并通过 BLE 上报
+        self.wifi_manager.start_monitoring()
+
 
     def _connect_wifi(self, ssid: str, password: str):
         try:

@@ -4,16 +4,13 @@
 import logging
 import subprocess
 import time
-import yaml
 from threading import Event, Thread
 from typing import Callable, Optional
 
 from state_machine import WiFiState
-import os
 
 logger = logging.getLogger(__name__)
 
-NETPLAN_CONFIG_PATH = "/etc/netplan/52-wlan0-init.yaml"
 
 class WiFiManager:
     """WiFi 管理器 - 使用 nmcli (NetworkManager) 进行配网"""
@@ -28,152 +25,167 @@ class WiFiManager:
         self.current_ssid = ""
         self.current_password = ""
 
-    def connect(self, ssid: str, password: str, retry_times: int = 1) -> bool:
+    # def connect(self, ssid: str, password: str, retry_times: int = 3) -> bool:
+    #     """
+    #     连接到指定 WiFi
+
+    #     Args:
+    #         ssid: WiFi 名称
+    #         password: WiFi 密码
+    #         retry_times: 重试次数
+
+    #     Returns:
+    #         bool: 连接是否成功
+    #     """
+    #     self.current_ssid = ssid
+    #     self.current_password = password
+
+    #     logger.info(f"开始连接 WiFi: {ssid}")
+    #     self._update_state(WiFiState.CONNECTING)
+
+    #     # 确保WiFi设备已启用
+    #     if not self._ensure_wifi_enabled():
+    #         logger.error("WiFi 设备未启用或不可用")
+    #         self._update_state(WiFiState.FAILED)
+    #         return False
+
+    #     for attempt in range(retry_times):
+    #         try:
+    #             # 检查连接是否已存在
+    #             if self._is_connection_exists(ssid):
+    #                 logger.info(f"WiFi 连接 '{ssid}' 已存在，尝试激活")
+    #                 success = self._activate_connection(ssid)
+    #             else:
+    #                 # 创建新连接
+    #                 logger.info(f"创建新的 WiFi 连接: {ssid}")
+    #                 # 先尝试快速连接方式
+    #                 success = self._create_and_connect(ssid, password)
+    #                 # 如果快速方式失败，尝试更可靠的连接方式
+    #                 if not success and attempt == retry_times - 1:
+    #                     logger.info(f"快速连接失败，尝试使用备用连接方式: {ssid}")
+    #                     success = self._create_and_connect_alternative(ssid, password)
+
+    #             if success:
+    #                 logger.info(f"WiFi 连接成功: {ssid}")
+    #                 self._update_state(WiFiState.CONNECTED)
+
+    #                 # 启动连接监控
+    #                 self.start_monitoring()
+    #                 return True
+    #             else:
+    #                 logger.warning(f"WiFi 连接失败（尝试 {attempt + 1}/{retry_times}）")
+
+    #         except Exception as e:
+    #             logger.error(f"WiFi 连接异常: {e}")
+
+    #         # 等待后重试
+    #         if attempt < retry_times - 1:
+    #             time.sleep(2)
+
+    #     # 所有重试失败
+    #     logger.error(f"WiFi 连接失败，已重试 {retry_times} 次")
+    #     self._update_state(WiFiState.FAILED)
+    #     return False
+
+    def connect(self, ssid: str, password: str, retry_times: int = 3) -> bool:
         """
-        连接到指定 WiFi - 通过修改 Netplan 配置并重启
-        
-        注意：此方法成功返回 True 表示配置已写入并触发了重启。
-        如果配置写入失败，返回 False。
+        连接到指定 WiFi - 最终稳定版
         """
         self.current_ssid = ssid
         self.current_password = password
 
-        logger.info(f"开始配置 WiFi: {ssid} (模式: Netplan + Reboot)")
+        logger.info(f"开始连接 WiFi: {ssid}")
         self._update_state(WiFiState.CONNECTING)
 
-        try:
-            # 1. 读取现有的 Netplan 配置
-            if not os.path.exists(NETPLAN_CONFIG_PATH):
-                logger.error(f"Netplan 配置文件不存在: {NETPLAN_CONFIG_PATH}")
-                self._update_state(WiFiState.FAILED)
-                return False
-
-            with open(NETPLAN_CONFIG_PATH, 'r', encoding='utf-8') as f:
-                try:
-                    config = yaml.safe_load(f)
-                except yaml.YAMLError as e:
-                    logger.error(f"解析 Netplan YAML 失败: {e}")
-                    self._update_state(WiFiState.FAILED)
-                    return False
-            
-            if config is None:
-                config = {}
-
-            # 2. 构建 WiFi 配置结构
-            # Netplan 结构通常为:
-            # network:
-            #   version: 2
-            #   wifis:
-            #     wlan0:  # 或者使用 match 规则
-            #       access-points:
-            #         "SSID_NAME":
-            #           password: "PASSWORD"
-            #       dhcp4: true
-            
-            if 'network' not in config:
-                config['network'] = {'version': 2}
-            
-            if 'wifis' not in config['network']:
-                config['network']['wifis'] = {}
-
-            # 确定无线接口名称。通常可能是 wlan0, wlps2s0 等。
-            # 为了通用性，我们可以尝试获取当前系统的无线接口名，或者使用 match 规则。
-            # 这里假设使用通用的 wlan0，或者如果原文件中有定义，保留原结构。
-            # 更稳健的做法是使用 match 规则匹配所有 wifi 设备，或者检测当前接口名。
-            
-            # 简单策略：检测当前存在的 wifi 接口名
-            iface_name = self._get_wifi_interface_name()
-            if not iface_name:
-                logger.warning("未检测到具体的 WiFi 接口名，默认使用 'wlan0'，可能需要根据硬件调整")
-                iface_name = "wlan0"
-
-            # 初始化该接口的配置字典
-            if iface_name not in config['network']['wifis']:
-                config['network']['wifis'][iface_name] = {}
-            
-            iface_config = config['network']['wifis'][iface_name]
-            
-            # 确保 access-points 存在
-            if 'access-points' not in iface_config:
-                iface_config['access-points'] = {}
-            
-            # 设置 SSID 和密码
-            # 注意：YAML 中 SSID 如果包含特殊字符可能需要引号，pyyaml 会处理
-            iface_config['access-points'][ssid] = {
-                'password': password
-            }
-            
-            # 确保开启 DHCP
-            if 'dhcp4' not in iface_config:
-                iface_config['dhcp4'] = True
-                
-            # 可选：设置 renderer 为 NetworkManager 如果系统混用，但纯 netplan 通常不需要或设为 networkd
-            # 如果原文件有 renderer，保持不变；如果没有，且系统是 Ubuntu Server，通常默认 networkd
-            # 如果系统是 Desktop 版 Ubuntu，可能需要 renderer: NetworkManager
-            # 这里我们尽量不改动 renderer，除非原本没有
-            
-            # 3. 写回配置文件
-            # 先备份
-            backup_path = f"{NETPLAN_CONFIG_PATH}.bak"
-            try:
-                subprocess.run(["cp", NETPLAN_CONFIG_PATH, backup_path], check=True, timeout=5)
-                logger.info(f"已备份原配置到 {backup_path}")
-            except Exception as e:
-                logger.warning(f"备份配置失败: {e}")
-
-            # 写入新配置
-            with open(NETPLAN_CONFIG_PATH, 'w', encoding='utf-8') as f:
-                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-            
-            logger.info(f"Netplan 配置已更新: SSID={ssid}, Interface={iface_name}")
-
-            # 4. 应用配置并重启
-            # 先尝试 apply，如果 apply 成功再重启，或者直接重启让 netplan 在启动时应用
-            # 直接重启更彻底，避免 apply 可能带来的网络瞬间中断导致 SSH 断开无法执行后续命令
-            logger.info("准备重启设备以应用新的 WiFi 配置...")
-            self._update_state(WiFiState.CONNECTED) # 标记为已连接（预期行为）
-            
-            # 异步执行重启，确保日志能刷出来
-            def delayed_reboot():
-                time.sleep(2) # 等待2秒让日志写入
-                logger.warning(">>> 执行系统重启 <<<")
-                try:
-                    # 使用 systemd reboot 或 shutdown
-                    subprocess.run(["reboot"], check=False)
-                except Exception as e:
-                    logger.error(f"重启命令执行异常: {e}")
-                    # 尝试备用重启命令
-                    subprocess.run(["shutdown", "-r", "now"], check=False)
-
-            reboot_thread = Thread(target=delayed_reboot, daemon=True)
-            reboot_thread.start()
-            
-            return True
-
-        except Exception as e:
-            logger.error(f"配置 WiFi 过程中发生错误: {e}", exc_info=True)
+        if not self._ensure_wifi_enabled():
+            logger.error("WiFi 设备未启用或不可用")
             self._update_state(WiFiState.FAILED)
             return False
-    def _get_wifi_interface_name(self) -> Optional[str]:
-        """获取第一个 WiFi 接口名称"""
-        try:
-            result = subprocess.run(
-                ["ls", "/sys/class/net"],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode != 0:
-                return None
-            
-            interfaces = result.stdout.strip().split('\n')
-            for iface in interfaces:
-                # 检查是否为无线接口
-                phy_path = f"/sys/class/net/{iface}/wireless"
-                if os.path.exists(phy_path):
-                    return iface
-        except Exception as e:
-            logger.error(f"获取 WiFi 接口名异常: {e}")
-        
-        return None
+
+        # 【关键步骤 1】：彻底删除旧配置，防止缓存干扰
+        if self._is_connection_exists(ssid):
+            logger.info(f"检测到旧配置 '{ssid}'，正在强制删除...")
+            try:
+                subprocess.run(["nmcli", "connection", "delete", ssid], capture_output=True, text=True, timeout=5)
+                import os
+                config_path = f"/etc/NetworkManager/system-connections/{ssid}.nmconnection"
+                if os.path.exists(config_path):
+                    os.remove(config_path)
+            except Exception as e:
+                logger.warning(f"删除旧配置异常: {e}")
+
+        for attempt in range(retry_times):
+            try:
+                logger.info(f"尝试直接连接 (尝试 {attempt + 1}/{retry_times})")
+                
+                # 【关键步骤 2】：使用 device wifi connect
+                result = subprocess.run(
+                    ["nmcli", "-t", "device", "wifi", "connect", ssid, "password", password],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                if result.returncode == 0:
+                    logger.info(f"连接请求已提交，正在轮询等待连接建立...")
+                    
+                    # 【关键步骤 3】：大幅延长等待时间至 60 秒
+                    # 因为日志显示底层已经在 associating，只是需要时间完成握手和 DHCP
+                    max_wait_seconds = 60
+                    check_interval = 2
+                    elapsed = 0
+                    
+                    while elapsed < max_wait_seconds:
+                        time.sleep(check_interval)
+                        elapsed += check_interval
+                        
+                        status = self.get_status()
+                        
+                        # 只要连上了，立即返回成功
+                        if status["connected"] and status["ssid"] == ssid:
+                            logger.info(f"WiFi 连接成功: {ssid} (耗时 {elapsed}s)")
+                            self._update_state(WiFiState.CONNECTED)
+                            self.start_monitoring()
+                            return True
+                        
+                        # 每 10 秒打印一次详细状态，便于调试
+                        if elapsed % 10 == 0:
+                            logger.debug(f"等待连接中... ({elapsed}/{max_wait_seconds}s), 当前状态: {status}")
+
+                    # 超时处理
+                    logger.warning(f"连接超时：命令返回成功，但 {max_wait_seconds} 秒后仍未检测到 connected 状态")
+                    
+                    # 最后再检查一次，防止竞态条件
+                    final_status = self.get_status()
+                    if final_status["connected"] and final_status["ssid"] == ssid:
+                        logger.info(f"延迟检查发现连接已建立")
+                        self._update_state(WiFiState.CONNECTED)
+                        self.start_monitoring()
+                        return True
+                    
+                    # 如果还没连上，查看是否处于中间状态（如 ip-config），如果是，再额外等 10 秒
+                    # 这里可以通过解析 nmcli -t -f STATE device status 来获取更细粒度的状态
+                    # 但为了简单，我们直接进入下一次重试或失败
+                        
+                else:
+                    stderr_msg = result.stderr.strip()
+                    logger.error(f"连接命令失败: {stderr_msg}")
+                    
+                    if "already exists" in stderr_msg.lower():
+                        logger.warning("连接已存在冲突，清理后重试...")
+                        subprocess.run(["nmcli", "connection", "delete", ssid], capture_output=True, timeout=5)
+                        continue 
+
+            except Exception as e:
+                logger.error(f"WiFi 连接异常: {e}", exc_info=True)
+
+            if attempt < retry_times - 1:
+                logger.info(f"等待 2 秒后重试...")
+                time.sleep(2)
+
+        logger.error(f"WiFi 连接失败，已重试 {retry_times} 次")
+        self._update_state(WiFiState.FAILED)
+        return False
 
     def disconnect(self) -> bool:
         """断开当前 WiFi 连接"""
@@ -198,132 +210,43 @@ class WiFiManager:
             logger.error(f"WiFi 断开异常: {e}")
             return False
 
-    # def get_status(self) -> dict:
-    #     """获取 WiFi 状态"""
-    #     try:
-    #         # 使用 device status 检查实际的 WiFi 设备连接状态（更准确）
-    #         # 而不是 connection show（只检查连接配置）
-    #         result = subprocess.run(
-    #             ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
-    #             capture_output=True,
-    #             text=True,
-    #             timeout=5,
-    #         )
-
-    #         if result.returncode == 0:
-    #             lines = result.stdout.strip().split("\n")
-    #             for line in lines:
-    #                 if not line:
-    #                     continue
-    #                 parts = line.split(":")
-    #                 # 格式: DEVICE:TYPE:STATE:CONNECTION
-    #                 # 例如: wlan0:wifi:connected:danhuang
-    #                 if len(parts) >= 4 and parts[1] == "wifi":
-    #                     device = parts[0]
-    #                     state = parts[2]
-    #                     connection = parts[3] if len(parts) > 3 else ""
-
-    #                     # 检查设备状态是否为 connected
-    #                     if state == "connected" and connection:
-    #                         # 获取 SSID（CONNECTION 字段就是连接名称，通常等于 SSID）
-    #                         ssid = connection
-    #                         return {"connected": True, "ssid": ssid, "ip": self._get_ip_address()}
-
-    #         # 如果没有找到连接的 WiFi 设备，返回未连接状态
-    #         return {"connected": False, "ssid": "", "ip": ""}
-
-    #     except Exception as e:
-    #         logger.error(f"获取 WiFi 状态异常: {e}")
-    #         return {"connected": False, "ssid": "", "ip": ""}
-    
     def get_status(self) -> dict:
-        """获取 WiFi 状态 - 增强版：结合 nmcli 和 IP 检测"""
-        ssid = ""
-        ip = ""
-        is_connected = False
-
-        # 方法 1: 尝试从 nmcli 获取详细信息
+        """获取 WiFi 状态"""
         try:
-            # 强制使用 C 语言环境，避免解析错误
-            env = os.environ.copy()
-            env['LC_ALL'] = 'C'
-            
+            # 使用 device status 检查实际的 WiFi 设备连接状态（更准确）
+            # 而不是 connection show（只检查连接配置）
             result = subprocess.run(
                 ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
-                capture_output=True, text=True, timeout=5,
-                env=env
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
+
             if result.returncode == 0:
                 lines = result.stdout.strip().split("\n")
                 for line in lines:
-                    if not line: continue
+                    if not line:
+                        continue
                     parts = line.split(":")
-                    # 调试日志：打印原始解析结果，方便排查
-                    # logger.debug(f"nmcli parse: {parts}")
-                    
-                    if len(parts) >= 3 and parts[1].strip() == "wifi":
-                        device = parts[0].strip()
-                        state = parts[2].strip()
-                        connection = parts[3].strip() if len(parts) > 3 else ""
+                    # 格式: DEVICE:TYPE:STATE:CONNECTION
+                    # 例如: wlan0:wifi:connected:danhuang
+                    if len(parts) >= 4 and parts[1] == "wifi":
+                        device = parts[0]
+                        state = parts[2]
+                        connection = parts[3] if len(parts) > 3 else ""
 
-                        # 只要状态是 connected，即便 connection 名字为空，也先标记为潜在连接
-                        if state == "connected":
-                            is_connected = True
-                            ssid = connection if connection else self._get_ssid_from_iw(device)
-                            break
-                        # 如果状态是 connecting 或 ip-config，也可以视为正在连接
-                        elif state in ["connecting", "ip-config", "ip-check"]:
-                            is_connected = False # 暂时视为未完全连接
+                        # 检查设备状态是否为 connected
+                        if state == "connected" and connection:
+                            # 获取 SSID（CONNECTION 字段就是连接名称，通常等于 SSID）
+                            ssid = connection
+                            return {"connected": True, "ssid": ssid, "ip": self._get_ip_address()}
+
+            # 如果没有找到连接的 WiFi 设备，返回未连接状态
+            return {"connected": False, "ssid": "", "ip": ""}
+
         except Exception as e:
-            logger.debug(f"nmcli 检测异常: {e}")
-
-        # 方法 2: 【关键兜底】如果 nmcli 没检测到，检查是否有 IP 地址
-        # 适用于 Netplan/networkd 接管了网络，但 nmcli 状态不同步的情况
-        if not is_connected:
-            try:
-                iface = self._get_wifi_interface_name() or "wlan0"
-                ip_result = subprocess.run(
-                    ["ip", "-j", "addr", "show", iface],
-                    capture_output=True, text=True, timeout=5
-                )
-                if ip_result.returncode == 0:
-                    import json
-                    data = json.loads(ip_result.stdout)
-                    for addr_info in data:
-                        # 检查是否有 inet (IPv4) 地址，且不是 169.254.x.x (APIPA/无效IP)
-                        for addr in addr_info.get("addr_info", []):
-                            if addr["family"] == "inet" and not addr["local"].startswith("169.254"):
-                                is_connected = True
-                                ip = addr["local"]
-                                # 尝试从 iw 获取 SSID
-                                ssid = self._get_ssid_from_iw(iface)
-                                logger.info(f"nmcli 未报告连接，但检测到有效 IP: {ip}，判定为已连接")
-                                break
-                        if is_connected: break
-            except Exception as e:
-                logger.debug(f"IP 检测异常: {e}")
-
-        # 如果连上了但还没获取到 IP，再试一次 hostname
-        if is_connected and not ip:
-            ip = self._get_ip_address()
-
-        return {
-            "connected": is_connected, 
-            "ssid": ssid, 
-            "ip": ip
-        }
-
-    def _get_ssid_from_iw(self, interface: str) -> str:
-        """通过 iw 命令获取当前连接的 SSID"""
-        try:
-            res = subprocess.run(["iw", "dev", interface, "info"], 
-                                 capture_output=True, text=True, timeout=5)
-            for line in res.stdout.split('\n'):
-                if 'ssid' in line.lower():
-                    return line.split('ssid ')[-1].strip()
-        except:
-            pass
-        return ""
+            logger.error(f"获取 WiFi 状态异常: {e}")
+            return {"connected": False, "ssid": "", "ip": ""}
 
     def start_monitoring(self) -> None:
         """启动 WiFi 连接监控"""
@@ -729,18 +652,15 @@ class WiFiManager:
                     consecutive_failures += 1
                     logger.warning(f"WiFi 连接断开（连续 {consecutive_failures} 次）")
 
-                    # if consecutive_failures >= 3:
-                    #     # 尝试重连
-                    #     logger.info("尝试自动重连 WiFi")
-                    #     if self.current_ssid and self.current_password:
-                    #         self._update_state(WiFiState.CONNECTING)
-                    #         self.connect(self.current_ssid, self.current_password)
-                    #     else:
-                    #         logger.error("无法重连：缺少 WiFi 配置信息")
-                    #     consecutive_failures = 0
                     if consecutive_failures >= 3:
-                         if self.state_callback:
-                            self._update_state(WiFiState.DISCONNECTED)
+                        # 尝试重连
+                        logger.info("尝试自动重连 WiFi")
+                        if self.current_ssid and self.current_password:
+                            self._update_state(WiFiState.CONNECTING)
+                            self.connect(self.current_ssid, self.current_password)
+                        else:
+                            logger.error("无法重连：缺少 WiFi 配置信息")
+                        consecutive_failures = 0
 
                 # 定期通过 BLE 上报 WiFi 状态（即使状态未变化）
                 if self.status_report_callback:
