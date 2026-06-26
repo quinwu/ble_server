@@ -14,7 +14,13 @@ import dbus.mainloop.glib
 import dbus.service
 from gi.repository import GLib
 
+import struct
+import itertools
+import math
+import zlib
+
 from ble_json_buffer import MAX_WRITE_BUFFER_SIZE, WRITE_BUFFER_TIMEOUT_SEC, try_parse_complete_json
+
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +239,9 @@ class WiFiConfigCharacteristic(JsonWriteCharacteristic):
     def _handle_json(self, config: dict) -> None:
         ssid = config.get("ssid", "")
         password = config.get("psk", config.get("password", ""))
+        device = config.get("device", "unknown")
+        # 存入全局缓存
+        self.service.client_device_model = device
 
         if not ssid:
             raise ValueError("SSID 不能为空")
@@ -252,6 +261,9 @@ class CloudConfigCharacteristic(JsonWriteCharacteristic):
 
     def _handle_json(self, config: dict) -> None:
         upload_url = config.get("upload_url", "")
+        device = config.get("device", "unknown")
+        # 存入全局缓存
+        self.service.client_device_model = device
 
         if not upload_url:
             raise ValueError("upload_url 不能为空")
@@ -272,6 +284,10 @@ class CaptureCommandCharacteristic(JsonWriteCharacteristic):
         cmd = config.get("command", "")
         file_batch = config.get("file_batch", "")
         authorization = config.get("authorization", "")
+        device = config.get("device", "unknown")
+
+        # 存入全局缓存
+        self.service.client_device_model = device
 
         if cmd == "capture":
             if self.on_capture:
@@ -280,23 +296,199 @@ class CaptureCommandCharacteristic(JsonWriteCharacteristic):
             raise ValueError(f"未知指令: {cmd}")
 
 
+# class StatusNotifyCharacteristic(Characteristic):
+#     def __init__(self, bus, index, service):
+#         super().__init__(bus, index, CHAR_STATUS_NOTIFY_UUID, ["notify"], service)
+#         self._last_notify_time = 0.0
+
+#     # def notify_status(self, status_dict: dict):
+#     #     """发送状态通知"""
+#     #     try:
+#     #         # 转换为 JSON
+#     #         status_json = json.dumps(status_dict, ensure_ascii=False)
+#     #         value = [dbus.Byte(c) for c in status_json.encode("utf-8")]
+
+#     #         # 发送 Notify
+#     #         self.send_notify(value)
+#     #         logger.info(f"状态通知已发送: {status_json}")
+
+#     #     except Exception as e:
+#     #         logger.error(f"发送状态通知失败: {e}")
+#     def notify_status(self, status_dict: dict):
+#         """发送状态通知，自动分包，兼容iPhone蓝牙182字节限制"""
+#         try:
+#             status_json = json.dumps(status_dict, ensure_ascii=False) + "\n" # 追加换行分隔符
+#             raw_bytes = status_json.encode("utf-8")
+#             MTU = 100
+#             offset = 0
+#             total_len = len(raw_bytes)
+
+#             while offset < total_len:
+#                 end = offset + MTU
+#                 chunk = raw_bytes[offset:end]
+#                 # 转dbus字节数组
+#                 value = [dbus.Byte(b) for b in chunk]
+#                 self.send_notify(value)
+#                 logger.debug(f"Notify分片发送 offset={offset}, len={len(chunk)}")
+#                 offset += MTU
+#                 # device_model = self.service.client_device_model
+                
+#                 # if device_model.startswith("ios"):
+#                     # logger.info(f"iOS设备({device_model})，使用短间隔发送分片")
+#                     # chunk_sleep = 0.03
+#                 # else:
+#                     # logger.info(f"安卓设备({device_model})，使用长间隔发送分片")
+#                 chunk_sleep = 0.02
+#                 time.sleep(chunk_sleep)
+#             logger.info(f"状态通知完整发送: {status_json.strip()}")
+#         except Exception as e:
+#             logger.error(f"发送状态通知失败: {e}")
+
+
 class StatusNotifyCharacteristic(Characteristic):
+    """
+    状态通知 Characteristic
+
+    使用自定义 BLE Notify 分包协议：
+
+    每个 BLE Notify 包格式：
+    ┌────────────┬────────────┬────────┬────────┬──────────────┬────────────┐
+    │ magic      │ msg_id     │ seq    │ total  │ payload_len  │ payload    │
+    │ 2 bytes    │ 2 bytes    │ 1 byte │ 1 byte │ 1 byte       │ N bytes    │
+    └────────────┴────────────┴────────┴────────┴──────────────┴────────────┘
+
+    magic:
+        固定 0xAA55，用于判断是否是本协议包。
+
+    msg_id:
+        消息 ID。同一条 JSON 拆出来的所有分片 msg_id 相同。
+
+    seq:
+        当前分片序号，从 0 开始。
+
+    total:
+        总分片数。
+
+    payload_len:
+        当前 payload 实际长度。
+
+    payload:
+        JSON UTF-8 字节的一部分。
+    """
+
+    MAGIC = 0xAA55
+
+    # 按最保守 BLE Notify 长度处理：20 字节
+    # 如果后续你能拿到 negotiated MTU，可以改成 negotiated_mtu - 3
+    BLE_PACKET_SIZE = 20
+
+    # magic(2) + msg_id(2) + seq(1) + total(1) + payload_len(1)
+    HEADER_SIZE = 7
+
+    PAYLOAD_SIZE = BLE_PACKET_SIZE - HEADER_SIZE
+
+    # > 表示大端序
+    # H: unsigned short, 2 bytes
+    # B: unsigned char, 1 byte
+    HEADER_FORMAT = ">H H B B B"
+
+    _msg_counter = itertools.count(1)
+
     def __init__(self, bus, index, service):
         super().__init__(bus, index, CHAR_STATUS_NOTIFY_UUID, ["notify"], service)
+        self._last_notify_time = 0.0
 
     def notify_status(self, status_dict: dict):
-        """发送状态通知"""
-        try:
-            # 转换为 JSON
-            status_json = json.dumps(status_dict, ensure_ascii=False)
-            value = [dbus.Byte(c) for c in status_json.encode("utf-8")]
+        """
+        发送状态通知，使用二进制包头进行可靠分包。
 
-            # 发送 Notify
-            self.send_notify(value)
-            logger.info(f"状态通知已发送: {status_json}")
+        客户端必须根据 msg_id + seq + total 重组后，再解析 JSON。
+        不允许客户端每收到一包就 JSON.parse。
+        """
+        try:
+            if not self.notifying:
+                logger.warning("Notify not enabled, skip status notify")
+                return
+
+            # 1. JSON 转 UTF-8 bytes
+            raw_bytes = json.dumps(
+                status_dict,
+                ensure_ascii=False,
+                separators=(",", ":")
+            ).encode("utf-8")
+
+            total_len = len(raw_bytes)
+            if total_len == 0:
+                logger.warning("empty status json, skip notify")
+                return
+
+            # 2. 计算分包数量
+            total_packets = math.ceil(total_len / self.PAYLOAD_SIZE)
+
+            if total_packets > 255:
+                raise ValueError(
+                    f"status json too large: {total_len} bytes, "
+                    f"packets={total_packets}, max packets=255"
+                )
+
+            # 3. 生成消息 ID
+            msg_id = next(self._msg_counter) & 0xFFFF
+
+            # 可选：日志用 CRC，当前包头没带 CRC，客户端也可以不校验
+            crc32_value = zlib.crc32(raw_bytes) & 0xFFFFFFFF
+
+            logger.info(
+                f"开始发送状态通知: msg_id={msg_id}, "
+                f"json_len={total_len}, packets={total_packets}, crc32={crc32_value:08X}"
+            )
+
+            # 4. 分包发送
+            for seq in range(total_packets):
+                start = seq * self.PAYLOAD_SIZE
+                end = start + self.PAYLOAD_SIZE
+                payload = raw_bytes[start:end]
+                payload_len = len(payload)
+
+                # 5. 构造包头
+                header = struct.pack(
+                    self.HEADER_FORMAT,
+                    self.MAGIC,
+                    msg_id,
+                    seq,
+                    total_packets,
+                    payload_len
+                )
+
+                packet = header + payload
+
+                # 理论上不能超过 BLE_PACKET_SIZE
+                if len(packet) > self.BLE_PACKET_SIZE:
+                    raise ValueError(
+                        f"packet too large: {len(packet)} > {self.BLE_PACKET_SIZE}"
+                    )
+
+                value = [dbus.Byte(b) for b in packet]
+                self.send_notify(value)
+
+                logger.debug(
+                    f"Notify分片发送: msg_id={msg_id}, "
+                    f"seq={seq}/{total_packets - 1}, "
+                    f"payload_len={payload_len}, packet_len={len(packet)}"
+                )
+
+                # 6. 临时流控
+                # 注意：这个 sleep 只是防止蓝牙栈压力过大，
+                # 不再承担“判断 JSON 边界”的职责。
+                time.sleep(0.03)
+
+            logger.info(
+                f"状态通知完整发送: msg_id={msg_id}, "
+                f"packets={total_packets}, json_len={total_len}"
+            )
 
         except Exception as e:
             logger.error(f"发送状态通知失败: {e}")
+
 
 
 class DeviceControlService(Service):
@@ -311,6 +503,9 @@ class DeviceControlService(Service):
         # 状态通知 Characteristic（需要引用以便发送通知）
         self.status_notify_char = StatusNotifyCharacteristic(bus, 3, self)
         self.add_characteristic(self.status_notify_char)
+
+        self.client_device_model = "unknown"
+
 
     def notify_status(self, status_dict: dict):
         """发送状态通知"""

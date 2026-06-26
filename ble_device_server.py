@@ -470,7 +470,7 @@ class BLEDeviceServer:
                 return (device, None)
 
         # 使用线程池并行拍摄
-        with ThreadPoolExecutor(max_workers=len(devices)) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             futures = {executor.submit(capture_single_device, device): device for device in devices}
 
             for future in as_completed(futures):
