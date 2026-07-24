@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 NETPLAN_CONFIG_PATH = "/etc/netplan/52-wlan0-init.yaml"
 
 class WiFiManager:
-    """WiFi 管理器 - 使用 nmcli (NetworkManager) 进行配网"""
+    """WiFi 管理器 - 使用 systemd-networkd 进行配网"""
 
     def __init__(self, state_callback: Optional[Callable] = None, status_report_callback: Optional[Callable] = None):
         self.state_callback = state_callback
@@ -175,28 +175,28 @@ class WiFiManager:
         
         return None
 
-    def disconnect(self) -> bool:
-        """断开当前 WiFi 连接"""
-        try:
-            # 停止监控
-            self.stop_monitoring()
+    # def disconnect(self) -> bool:
+    #     """断开当前 WiFi 连接"""
+    #     try:
+    #         # 停止监控
+    #         self.stop_monitoring()
 
-            # 断开连接
-            result = subprocess.run(
-                ["nmcli", "connection", "down", self.current_ssid], capture_output=True, text=True, timeout=10
-            )
+    #         # 断开连接
+    #         result = subprocess.run(
+    #             ["nmcli", "connection", "down", self.current_ssid], capture_output=True, text=True, timeout=10
+    #         )
 
-            if result.returncode == 0:
-                logger.info(f"WiFi 已断开: {self.current_ssid}")
-                self._update_state(WiFiState.UNCONFIGURED)
-                return True
-            else:
-                logger.warning(f"WiFi 断开失败: {result.stderr}")
-                return False
+    #         if result.returncode == 0:
+    #             logger.info(f"WiFi 已断开: {self.current_ssid}")
+    #             self._update_state(WiFiState.UNCONFIGURED)
+    #             return True
+    #         else:
+    #             logger.warning(f"WiFi 断开失败: {result.stderr}")
+    #             return False
 
-        except Exception as e:
-            logger.error(f"WiFi 断开异常: {e}")
-            return False
+    #     except Exception as e:
+    #         logger.error(f"WiFi 断开异常: {e}")
+    #         return False
 
     # def get_status(self) -> dict:
     #     """获取 WiFi 状态"""
@@ -243,39 +243,39 @@ class WiFiManager:
         is_connected = False
 
         # 方法 1: 尝试从 nmcli 获取详细信息
-        try:
-            # 强制使用 C 语言环境，避免解析错误
-            env = os.environ.copy()
-            env['LC_ALL'] = 'C'
+        # try:
+        #     # 强制使用 C 语言环境，避免解析错误
+        #     env = os.environ.copy()
+        #     env['LC_ALL'] = 'C'
             
-            result = subprocess.run(
-                ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
-                capture_output=True, text=True, timeout=5,
-                env=env
-            )
-            if result.returncode == 0:
-                lines = result.stdout.strip().split("\n")
-                for line in lines:
-                    if not line: continue
-                    parts = line.split(":")
-                    # 调试日志：打印原始解析结果，方便排查
-                    # logger.debug(f"nmcli parse: {parts}")
+        #     result = subprocess.run(
+        #         ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
+        #         capture_output=True, text=True, timeout=5,
+        #         env=env
+        #     )
+        #     if result.returncode == 0:
+        #         lines = result.stdout.strip().split("\n")
+        #         for line in lines:
+        #             if not line: continue
+        #             parts = line.split(":")
+        #             # 调试日志：打印原始解析结果，方便排查
+        #             # logger.debug(f"nmcli parse: {parts}")
                     
-                    if len(parts) >= 3 and parts[1].strip() == "wifi":
-                        device = parts[0].strip()
-                        state = parts[2].strip()
-                        connection = parts[3].strip() if len(parts) > 3 else ""
+        #             if len(parts) >= 3 and parts[1].strip() == "wifi":
+        #                 device = parts[0].strip()
+        #                 state = parts[2].strip()
+        #                 connection = parts[3].strip() if len(parts) > 3 else ""
 
-                        # 只要状态是 connected，即便 connection 名字为空，也先标记为潜在连接
-                        if state == "connected":
-                            is_connected = True
-                            ssid = connection if connection else self._get_ssid_from_iw(device)
-                            break
-                        # 如果状态是 connecting 或 ip-config，也可以视为正在连接
-                        elif state in ["connecting", "ip-config", "ip-check"]:
-                            is_connected = False # 暂时视为未完全连接
-        except Exception as e:
-            logger.debug(f"nmcli 检测异常: {e}")
+        #                 # 只要状态是 connected，即便 connection 名字为空，也先标记为潜在连接
+        #                 if state == "connected":
+        #                     is_connected = True
+        #                     ssid = connection if connection else self._get_ssid_from_iw(device)
+        #                     break
+        #                 # 如果状态是 connecting 或 ip-config，也可以视为正在连接
+        #                 elif state in ["connecting", "ip-config", "ip-check"]:
+        #                     is_connected = False # 暂时视为未完全连接
+        # except Exception as e:
+        #     logger.debug(f"nmcli 检测异常: {e}")
 
         # 方法 2: 【关键兜底】如果 nmcli 没检测到，检查是否有 IP 地址
         # 适用于 Netplan/networkd 接管了网络，但 nmcli 状态不同步的情况
@@ -297,7 +297,7 @@ class WiFiManager:
                                 ip = addr["local"]
                                 # 尝试从 iw 获取 SSID
                                 ssid = self._get_ssid_from_iw(iface)
-                                logger.info(f"nmcli 未报告连接，但检测到有效 IP: {ip}，判定为已连接")
+                                # logger.info(f"nmcli 未报告连接，但检测到有效 IP: {ip}，判定为已连接")
                                 break
                         if is_connected: break
             except Exception as e:
@@ -345,356 +345,356 @@ class WiFiManager:
 
     # ==================== 内部方法 ====================
 
-    def _ensure_wifi_enabled(self) -> bool:
-        """确保WiFi设备已启用"""
-        try:
-            # 检查WiFi设备状态
-            result = subprocess.run(
-                ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
+    # def _ensure_wifi_enabled(self) -> bool:
+    #     """确保WiFi设备已启用"""
+    #     try:
+    #         # 检查WiFi设备状态
+    #         result = subprocess.run(
+    #             ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
+    #             capture_output=True,
+    #             text=True,
+    #             timeout=5,
+    #         )
 
-            if result.returncode != 0:
-                logger.error("无法获取设备状态")
-                return False
+    #         if result.returncode != 0:
+    #             logger.error("无法获取设备状态")
+    #             return False
 
-            # 查找WiFi设备
-            wifi_device = None
-            for line in result.stdout.strip().split("\n"):
-                if not line:
-                    continue
-                parts = line.split(":")
-                if len(parts) >= 3 and parts[1] == "wifi":
-                    wifi_device = parts[0]
-                    state = parts[2]
+    #         # 查找WiFi设备
+    #         wifi_device = None
+    #         for line in result.stdout.strip().split("\n"):
+    #             if not line:
+    #                 continue
+    #             parts = line.split(":")
+    #             if len(parts) >= 3 and parts[1] == "wifi":
+    #                 wifi_device = parts[0]
+    #                 state = parts[2]
 
-                    # 如果设备未连接或未启用，尝试启用
-                    if state in ["unavailable", "disconnected"]:
-                        logger.info(f"启用 WiFi 设备: {wifi_device}")
-                        enable_result = subprocess.run(
-                            ["nmcli", "radio", "wifi", "on"], capture_output=True, text=True, timeout=5
-                        )
-                        if enable_result.returncode == 0:
-                            # 等待设备就绪
-                            time.sleep(2)
-                            logger.info(f"WiFi 设备已启用: {wifi_device}")
-                        else:
-                            logger.warning(f"启用 WiFi 设备失败: {enable_result.stderr}")
+    #                 # 如果设备未连接或未启用，尝试启用
+    #                 if state in ["unavailable", "disconnected"]:
+    #                     logger.info(f"启用 WiFi 设备: {wifi_device}")
+    #                     enable_result = subprocess.run(
+    #                         ["nmcli", "radio", "wifi", "on"], capture_output=True, text=True, timeout=5
+    #                     )
+    #                     if enable_result.returncode == 0:
+    #                         # 等待设备就绪
+    #                         time.sleep(2)
+    #                         logger.info(f"WiFi 设备已启用: {wifi_device}")
+    #                     else:
+    #                         logger.warning(f"启用 WiFi 设备失败: {enable_result.stderr}")
 
-                    return True  # 找到WiFi设备
+    #                 return True  # 找到WiFi设备
 
-            if wifi_device is None:
-                logger.error("未找到 WiFi 设备")
-                return False
+    #         if wifi_device is None:
+    #             logger.error("未找到 WiFi 设备")
+    #             return False
 
-            return True
+    #         return True
 
-        except Exception as e:
-            logger.error(f"检查 WiFi 设备状态异常: {e}")
-            return False
+    #     except Exception as e:
+    #         logger.error(f"检查 WiFi 设备状态异常: {e}")
+    #         return False
 
-    def _is_connection_exists(self, ssid: str) -> bool:
-        """检查连接配置是否存在"""
-        return self._get_connection_name(ssid) is not None
+    # def _is_connection_exists(self, ssid: str) -> bool:
+    #     """检查连接配置是否存在"""
+    #     return self._get_connection_name(ssid) is not None
 
-    def _get_connection_name(self, ssid: str) -> Optional[str]:
-        """根据 SSID 获取连接名称"""
-        try:
-            # 获取所有 WiFi 连接配置
-            result = subprocess.run(
-                ["nmcli", "-t", "-f", "NAME,802-11-wireless.ssid", "connection", "show"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
+    # def _get_connection_name(self, ssid: str) -> Optional[str]:
+    #     """根据 SSID 获取连接名称"""
+    #     try:
+    #         # 获取所有 WiFi 连接配置
+    #         result = subprocess.run(
+    #             ["nmcli", "-t", "-f", "NAME,802-11-wireless.ssid", "connection", "show"],
+    #             capture_output=True,
+    #             text=True,
+    #             timeout=5,
+    #         )
 
-            if result.returncode != 0:
-                return None
+    #         if result.returncode != 0:
+    #             return None
 
-            # 解析输出，查找匹配的 SSID
-            for line in result.stdout.strip().split("\n"):
-                if not line:
-                    continue
-                parts = line.split(":")
-                if len(parts) >= 2:
-                    conn_name = parts[0]
-                    conn_ssid = parts[1] if len(parts) > 1 else ""
-                    if conn_ssid == ssid:
-                        return conn_name
+    #         # 解析输出，查找匹配的 SSID
+    #         for line in result.stdout.strip().split("\n"):
+    #             if not line:
+    #                 continue
+    #             parts = line.split(":")
+    #             if len(parts) >= 2:
+    #                 conn_name = parts[0]
+    #                 conn_ssid = parts[1] if len(parts) > 1 else ""
+    #                 if conn_ssid == ssid:
+    #                     return conn_name
 
-            # 如果没找到，尝试直接使用 SSID 作为连接名称（向后兼容）
-            # 某些情况下连接名称就是 SSID
-            name_result = subprocess.run(
-                ["nmcli", "-t", "-f", "NAME", "connection", "show"], capture_output=True, text=True, timeout=5
-            )
-            if name_result.returncode == 0 and ssid in name_result.stdout:
-                return ssid
+    #         # 如果没找到，尝试直接使用 SSID 作为连接名称（向后兼容）
+    #         # 某些情况下连接名称就是 SSID
+    #         name_result = subprocess.run(
+    #             ["nmcli", "-t", "-f", "NAME", "connection", "show"], capture_output=True, text=True, timeout=5
+    #         )
+    #         if name_result.returncode == 0 and ssid in name_result.stdout:
+    #             return ssid
 
-            return None
+    #         return None
 
-        except Exception as e:
-            logger.error(f"获取连接名称异常: {e}")
-            return None
+    #     except Exception as e:
+    #         logger.error(f"获取连接名称异常: {e}")
+    #         return None
 
-    def _activate_connection(self, ssid: str) -> bool:
-        """激活已存在的连接"""
-        try:
-            # 首先获取连接名称（可能和 SSID 不同）
-            connection_name = self._get_connection_name(ssid)
-            if not connection_name:
-                logger.error(f"未找到 SSID '{ssid}' 对应的连接配置")
-                return False
+    # def _activate_connection(self, ssid: str) -> bool:
+    #     """激活已存在的连接"""
+    #     try:
+    #         # 首先获取连接名称（可能和 SSID 不同）
+    #         connection_name = self._get_connection_name(ssid)
+    #         if not connection_name:
+    #             logger.error(f"未找到 SSID '{ssid}' 对应的连接配置")
+    #             return False
 
-            logger.debug(f"激活连接: {connection_name} (SSID: {ssid})")
-            result = subprocess.run(
-                ["nmcli", "connection", "up", connection_name], capture_output=True, text=True, timeout=30
-            )
+    #         logger.debug(f"激活连接: {connection_name} (SSID: {ssid})")
+    #         result = subprocess.run(
+    #             ["nmcli", "connection", "up", connection_name], capture_output=True, text=True, timeout=30
+    #         )
 
-            if result.returncode == 0:
-                # 等待连接建立（最多等待 5 秒）
-                for _ in range(10):
-                    time.sleep(0.5)
-                    status = self.get_status()
-                    if status["connected"] and status["ssid"] == ssid:
-                        logger.info(f"连接已激活: {ssid}")
-                        return True
-                logger.warning(f"连接激活命令成功，但未检测到连接状态: {ssid}")
-                return False
-            else:
-                logger.error(f"激活连接失败: {result.stderr.strip()}")
-                return False
+    #         if result.returncode == 0:
+    #             # 等待连接建立（最多等待 5 秒）
+    #             for _ in range(10):
+    #                 time.sleep(0.5)
+    #                 status = self.get_status()
+    #                 if status["connected"] and status["ssid"] == ssid:
+    #                     logger.info(f"连接已激活: {ssid}")
+    #                     return True
+    #             logger.warning(f"连接激活命令成功，但未检测到连接状态: {ssid}")
+    #             return False
+    #         else:
+    #             logger.error(f"激活连接失败: {result.stderr.strip()}")
+    #             return False
 
-        except subprocess.TimeoutExpired:
-            logger.error(f"激活连接超时: {ssid}")
-            return False
-        except Exception as e:
-            logger.error(f"激活连接异常: {e}")
-            return False
+    #     except subprocess.TimeoutExpired:
+    #         logger.error(f"激活连接超时: {ssid}")
+    #         return False
+    #     except Exception as e:
+    #         logger.error(f"激活连接异常: {e}")
+    #         return False
 
-    def _create_and_connect(self, ssid: str, password: str) -> bool:
-        """创建并连接到新的 WiFi"""
-        process = None
-        try:
-            # 使用 nmcli device wifi connect（异步方式）
-            logger.info(f"启动 WiFi 连接命令: {ssid}")
-            process = subprocess.Popen(
-                ["nmcli", "device", "wifi", "connect", ssid, "password", password],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+    # def _create_and_connect(self, ssid: str, password: str) -> bool:
+    #     """创建并连接到新的 WiFi"""
+    #     process = None
+    #     try:
+    #         # 使用 nmcli device wifi connect（异步方式）
+    #         logger.info(f"启动 WiFi 连接命令: {ssid}")
+    #         process = subprocess.Popen(
+    #             ["nmcli", "device", "wifi", "connect", ssid, "password", password],
+    #             stdout=subprocess.PIPE,
+    #             stderr=subprocess.PIPE,
+    #             text=True,
+    #         )
 
-            # 轮询检查连接状态，最多等待60秒
-            max_wait_time = 60
-            check_interval = 2
-            elapsed_time = 0
+    #         # 轮询检查连接状态，最多等待60秒
+    #         max_wait_time = 60
+    #         check_interval = 2
+    #         elapsed_time = 0
 
-            while elapsed_time < max_wait_time:
-                # 检查进程是否已完成
-                return_code = process.poll()
-                if return_code is not None:
-                    # 进程已完成，读取输出
-                    stdout, stderr = process.communicate()
-                    logger.info(f"WiFi 连接命令完成，返回码: {return_code}")
-                    if stdout:
-                        logger.debug(f"命令输出: {stdout.strip()}")
-                    if stderr:
-                        logger.debug(f"命令错误输出: {stderr.strip()}")
+    #         while elapsed_time < max_wait_time:
+    #             # 检查进程是否已完成
+    #             return_code = process.poll()
+    #             if return_code is not None:
+    #                 # 进程已完成，读取输出
+    #                 stdout, stderr = process.communicate()
+    #                 logger.info(f"WiFi 连接命令完成，返回码: {return_code}")
+    #                 if stdout:
+    #                     logger.debug(f"命令输出: {stdout.strip()}")
+    #                 if stderr:
+    #                     logger.debug(f"命令错误输出: {stderr.strip()}")
 
-                    if return_code == 0:
-                        logger.info(f"WiFi 连接命令执行成功: {ssid}")
-                        # 等待一下确保连接建立
-                        time.sleep(3)
-                        # 验证连接状态
-                        status = self.get_status()
-                        logger.info(f"连接状态检查: connected={status['connected']}, ssid={status['ssid']}")
-                        if status["connected"] and status["ssid"] == ssid:
-                            logger.info(f"WiFi 连接验证成功: {ssid}")
-                            return True
-                        else:
-                            logger.warning(f"连接命令成功但状态验证失败: {ssid}, 当前状态: {status}")
-                            # 即使状态验证失败，也再等待一下，可能连接还在建立中
-                            time.sleep(2)
-                            status = self.get_status()
-                            if status["connected"] and status["ssid"] == ssid:
-                                logger.info(f"延迟检查后连接成功: {ssid}")
-                                return True
-                    else:
-                        logger.error(
-                            f"WiFi 连接命令失败 (返回码 {return_code}): {stderr.strip() if stderr else '无错误输出'}"
-                        )
-                        # 即使命令失败，也检查一下状态（可能连接已建立）
-                        status = self.get_status()
-                        if status["connected"] and status["ssid"] == ssid:
-                            logger.info(f"命令失败但连接已建立: {ssid}")
-                            return True
-                        return False
+    #                 if return_code == 0:
+    #                     logger.info(f"WiFi 连接命令执行成功: {ssid}")
+    #                     # 等待一下确保连接建立
+    #                     time.sleep(3)
+    #                     # 验证连接状态
+    #                     status = self.get_status()
+    #                     logger.info(f"连接状态检查: connected={status['connected']}, ssid={status['ssid']}")
+    #                     if status["connected"] and status["ssid"] == ssid:
+    #                         logger.info(f"WiFi 连接验证成功: {ssid}")
+    #                         return True
+    #                     else:
+    #                         logger.warning(f"连接命令成功但状态验证失败: {ssid}, 当前状态: {status}")
+    #                         # 即使状态验证失败，也再等待一下，可能连接还在建立中
+    #                         time.sleep(2)
+    #                         status = self.get_status()
+    #                         if status["connected"] and status["ssid"] == ssid:
+    #                             logger.info(f"延迟检查后连接成功: {ssid}")
+    #                             return True
+    #                 else:
+    #                     logger.error(
+    #                         f"WiFi 连接命令失败 (返回码 {return_code}): {stderr.strip() if stderr else '无错误输出'}"
+    #                     )
+    #                     # 即使命令失败，也检查一下状态（可能连接已建立）
+    #                     status = self.get_status()
+    #                     if status["connected"] and status["ssid"] == ssid:
+    #                         logger.info(f"命令失败但连接已建立: {ssid}")
+    #                         return True
+    #                     return False
 
-                # 检查连接状态（可能在命令完成前就已连接）
-                status = self.get_status()
-                if status["connected"] and status["ssid"] == ssid:
-                    logger.info(f"WiFi 连接已建立（命令仍在运行）: {ssid}")
-                    # 终止进程（如果还在运行）
-                    if process.poll() is None:
-                        process.terminate()
-                        try:
-                            process.wait(timeout=2)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                    return True
+    #             # 检查连接状态（可能在命令完成前就已连接）
+    #             status = self.get_status()
+    #             if status["connected"] and status["ssid"] == ssid:
+    #                 logger.info(f"WiFi 连接已建立（命令仍在运行）: {ssid}")
+    #                 # 终止进程（如果还在运行）
+    #                 if process.poll() is None:
+    #                     process.terminate()
+    #                     try:
+    #                         process.wait(timeout=2)
+    #                     except subprocess.TimeoutExpired:
+    #                         process.kill()
+    #                 return True
 
-                time.sleep(check_interval)
-                elapsed_time += check_interval
-                if elapsed_time % 10 == 0:
-                    logger.debug(f"等待 WiFi 连接中... ({elapsed_time}/{max_wait_time}秒)")
+    #             time.sleep(check_interval)
+    #             elapsed_time += check_interval
+    #             if elapsed_time % 10 == 0:
+    #                 logger.debug(f"等待 WiFi 连接中... ({elapsed_time}/{max_wait_time}秒)")
 
-            # 超时，检查进程状态
-            logger.warning(f"WiFi 连接超时: {ssid}")
-            return_code = process.poll()
-            if return_code is None:
-                # 进程仍在运行，终止它
-                logger.info("终止仍在运行的连接进程")
-                process.terminate()
-                try:
-                    stdout, stderr = process.communicate(timeout=2)
-                    if stdout:
-                        logger.debug(f"终止后的输出: {stdout.strip()}")
-                    if stderr:
-                        logger.debug(f"终止后的错误输出: {stderr.strip()}")
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    logger.warning("强制终止连接进程")
-            else:
-                # 进程已完成，读取输出
-                stdout, stderr = process.communicate()
-                logger.info(f"超时时进程已完成，返回码: {return_code}")
-                if stdout:
-                    logger.debug(f"进程输出: {stdout.strip()}")
-                if stderr:
-                    logger.debug(f"进程错误输出: {stderr.strip()}")
+    #         # 超时，检查进程状态
+    #         logger.warning(f"WiFi 连接超时: {ssid}")
+    #         return_code = process.poll()
+    #         if return_code is None:
+    #             # 进程仍在运行，终止它
+    #             logger.info("终止仍在运行的连接进程")
+    #             process.terminate()
+    #             try:
+    #                 stdout, stderr = process.communicate(timeout=2)
+    #                 if stdout:
+    #                     logger.debug(f"终止后的输出: {stdout.strip()}")
+    #                 if stderr:
+    #                     logger.debug(f"终止后的错误输出: {stderr.strip()}")
+    #             except subprocess.TimeoutExpired:
+    #                 process.kill()
+    #                 logger.warning("强制终止连接进程")
+    #         else:
+    #             # 进程已完成，读取输出
+    #             stdout, stderr = process.communicate()
+    #             logger.info(f"超时时进程已完成，返回码: {return_code}")
+    #             if stdout:
+    #                 logger.debug(f"进程输出: {stdout.strip()}")
+    #             if stderr:
+    #                 logger.debug(f"进程错误输出: {stderr.strip()}")
 
-            # 最后检查一次状态
-            status = self.get_status()
-            logger.info(f"超时后最终状态检查: connected={status['connected']}, ssid={status['ssid']}")
-            if status["connected"] and status["ssid"] == ssid:
-                logger.info(f"超时后检查发现连接已建立: {ssid}")
-                return True
+    #         # 最后检查一次状态
+    #         status = self.get_status()
+    #         logger.info(f"超时后最终状态检查: connected={status['connected']}, ssid={status['ssid']}")
+    #         if status["connected"] and status["ssid"] == ssid:
+    #             logger.info(f"超时后检查发现连接已建立: {ssid}")
+    #             return True
 
-            return False
+    #         return False
 
-        except Exception as e:
-            logger.error(f"创建连接异常: {e}", exc_info=True)
-            if process and process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=2)
-                except:
-                    process.kill()
-            return False
+    #     except Exception as e:
+    #         logger.error(f"创建连接异常: {e}", exc_info=True)
+    #         if process and process.poll() is None:
+    #             try:
+    #                 process.terminate()
+    #                 process.wait(timeout=2)
+    #             except:
+    #                 process.kill()
+    #         return False
 
-    def _create_and_connect_alternative(self, ssid: str, password: str) -> bool:
-        """备用连接方法：使用 nmcli connection add + up（更可靠但更慢）"""
-        try:
-            logger.info(f"使用备用方法创建 WiFi 连接: {ssid}")
+    # def _create_and_connect_alternative(self, ssid: str, password: str) -> bool:
+    #     """备用连接方法：使用 nmcli connection add + up（更可靠但更慢）"""
+    #     try:
+    #         logger.info(f"使用备用方法创建 WiFi 连接: {ssid}")
 
-            # 步骤1: 创建连接配置
-            logger.info(f"创建连接配置: {ssid}")
-            add_result = subprocess.run(
-                [
-                    "nmcli",
-                    "connection",
-                    "add",
-                    "type",
-                    "wifi",
-                    "con-name",
-                    ssid,
-                    "ifname",
-                    "*",
-                    "ssid",
-                    ssid,
-                    "wifi-sec.key-mgmt",
-                    "wpa-psk",
-                    "wifi-sec.psk",
-                    password,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+    #         # 步骤1: 创建连接配置
+    #         logger.info(f"创建连接配置: {ssid}")
+    #         add_result = subprocess.run(
+    #             [
+    #                 "nmcli",
+    #                 "connection",
+    #                 "add",
+    #                 "type",
+    #                 "wifi",
+    #                 "con-name",
+    #                 ssid,
+    #                 "ifname",
+    #                 "*",
+    #                 "ssid",
+    #                 ssid,
+    #                 "wifi-sec.key-mgmt",
+    #                 "wpa-psk",
+    #                 "wifi-sec.psk",
+    #                 password,
+    #             ],
+    #             capture_output=True,
+    #             text=True,
+    #             timeout=10,
+    #         )
 
-            if add_result.returncode != 0:
-                # 如果连接已存在，尝试删除后重新创建
-                if "already exists" in add_result.stderr.lower():
-                    logger.info(f"连接配置已存在，尝试删除后重新创建: {ssid}")
-                    subprocess.run(["nmcli", "connection", "delete", ssid], capture_output=True, timeout=5)
-                    # 重新创建
-                    add_result = subprocess.run(
-                        [
-                            "nmcli",
-                            "connection",
-                            "add",
-                            "type",
-                            "wifi",
-                            "con-name",
-                            ssid,
-                            "ifname",
-                            "*",
-                            "ssid",
-                            ssid,
-                            "wifi-sec.key-mgmt",
-                            "wpa-psk",
-                            "wifi-sec.psk",
-                            password,
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                    )
+    #         if add_result.returncode != 0:
+    #             # 如果连接已存在，尝试删除后重新创建
+    #             if "already exists" in add_result.stderr.lower():
+    #                 logger.info(f"连接配置已存在，尝试删除后重新创建: {ssid}")
+    #                 subprocess.run(["nmcli", "connection", "delete", ssid], capture_output=True, timeout=5)
+    #                 # 重新创建
+    #                 add_result = subprocess.run(
+    #                     [
+    #                         "nmcli",
+    #                         "connection",
+    #                         "add",
+    #                         "type",
+    #                         "wifi",
+    #                         "con-name",
+    #                         ssid,
+    #                         "ifname",
+    #                         "*",
+    #                         "ssid",
+    #                         ssid,
+    #                         "wifi-sec.key-mgmt",
+    #                         "wpa-psk",
+    #                         "wifi-sec.psk",
+    #                         password,
+    #                     ],
+    #                     capture_output=True,
+    #                     text=True,
+    #                     timeout=10,
+    #                 )
 
-                if add_result.returncode != 0:
-                    logger.error(f"创建连接配置失败: {add_result.stderr.strip()}")
-                    return False
+    #             if add_result.returncode != 0:
+    #                 logger.error(f"创建连接配置失败: {add_result.stderr.strip()}")
+    #                 return False
 
-            logger.info(f"连接配置创建成功: {ssid}")
+    #         logger.info(f"连接配置创建成功: {ssid}")
 
-            # 步骤2: 激活连接
-            logger.info(f"激活连接: {ssid}")
-            up_result = subprocess.run(["nmcli", "connection", "up", ssid], capture_output=True, text=True, timeout=30)
+    #         # 步骤2: 激活连接
+    #         logger.info(f"激活连接: {ssid}")
+    #         up_result = subprocess.run(["nmcli", "connection", "up", ssid], capture_output=True, text=True, timeout=30)
 
-            if up_result.returncode != 0:
-                logger.error(f"激活连接失败: {up_result.stderr.strip()}")
-                return False
+    #         if up_result.returncode != 0:
+    #             logger.error(f"激活连接失败: {up_result.stderr.strip()}")
+    #             return False
 
-            logger.info(f"连接激活命令执行成功: {ssid}")
+    #         logger.info(f"连接激活命令执行成功: {ssid}")
 
-            # 步骤3: 等待并验证连接
-            max_wait = 20
-            for i in range(max_wait):
-                time.sleep(1)
-                status = self.get_status()
-                if status["connected"] and status["ssid"] == ssid:
-                    logger.info(f"备用方法连接成功: {ssid}")
-                    return True
-                if i % 5 == 0:
-                    logger.debug(f"等待连接建立... ({i}/{max_wait}秒)")
+    #         # 步骤3: 等待并验证连接
+    #         max_wait = 20
+    #         for i in range(max_wait):
+    #             time.sleep(1)
+    #             status = self.get_status()
+    #             if status["connected"] and status["ssid"] == ssid:
+    #                 logger.info(f"备用方法连接成功: {ssid}")
+    #                 return True
+    #             if i % 5 == 0:
+    #                 logger.debug(f"等待连接建立... ({i}/{max_wait}秒)")
 
-            # 最终检查
-            status = self.get_status()
-            if status["connected"] and status["ssid"] == ssid:
-                logger.info(f"备用方法最终验证成功: {ssid}")
-                return True
+    #         # 最终检查
+    #         status = self.get_status()
+    #         if status["connected"] and status["ssid"] == ssid:
+    #             logger.info(f"备用方法最终验证成功: {ssid}")
+    #             return True
 
-            logger.warning(f"备用方法连接失败，状态验证未通过: {ssid}")
-            return False
+    #         logger.warning(f"备用方法连接失败，状态验证未通过: {ssid}")
+    #         return False
 
-        except subprocess.TimeoutExpired as e:
-            logger.error(f"备用连接方法超时: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"备用连接方法异常: {e}", exc_info=True)
-            return False
+    #     except subprocess.TimeoutExpired as e:
+    #         logger.error(f"备用连接方法超时: {e}")
+    #         return False
+    #     except Exception as e:
+    #         logger.error(f"备用连接方法异常: {e}", exc_info=True)
+    #         return False
 
     def _get_ip_address(self) -> str:
         """获取当前 IP 地址"""

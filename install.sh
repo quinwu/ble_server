@@ -27,8 +27,8 @@ SERVICE_FILE="/etc/systemd/system/ble-device.service"
 
 echo -e "${GREEN}[1/8] 检查系统依赖...${NC}"
 
-# 检查并安装系统包
-REQUIRED_PACKAGES="bluez python3 python3-pip python3-dbus python3-gi network-manager fswebcam v4l-utils libcairo2-dev libdbus-1-dev pkg-config"
+# 检查并安装系统包  network-manager pyserial
+REQUIRED_PACKAGES="bluez python3 python3-pip python3-dbus python3-gi fswebcam v4l-utils libcairo2-dev libdbus-1-dev pkg-config"
 for package in $REQUIRED_PACKAGES; do
     if ! dpkg -l | grep -q "^ii  $package "; then
         echo "安装 $package..."
@@ -93,8 +93,8 @@ systemctl enable bluetooth
 systemctl start bluetooth
 
 # 设置蓝牙为可发现
-hciconfig hci0 up || echo "警告: 无法启用蓝牙适配器"
-hciconfig hci0 piscan || echo "警告: 无法设置蓝牙可发现模式"
+# hciconfig hci0 up || echo "警告: 无法启用蓝牙适配器"
+# hciconfig hci0 piscan || echo "警告: 无法设置蓝牙可发现模式"
 
 echo -e "${GREEN}[7/8] PWM 补光（可选）...${NC}"
 

@@ -122,6 +122,7 @@ class CameraController:
                     self.device,
                     "-r",
                     "1280x720",  # 分辨率
+                    "-t", "800",
                     "--no-banner",  # 不添加水印
                     "--jpeg",
                     "95",  # JPEG 质量
