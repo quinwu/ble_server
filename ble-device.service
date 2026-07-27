@@ -5,6 +5,9 @@ Wants=bluetooth.target
 
 [Service]
 Type=simple
+
+ExecStartPre=/usr/bin/btmgmt discov on
+
 ExecStart=/usr/bin/python3 /opt/ble_device/ble_device_server.py
 WorkingDirectory=/opt/ble_device
 StandardOutput=journal

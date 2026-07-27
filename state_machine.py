@@ -35,6 +35,12 @@ class DeviceState(Enum):
     ERROR = "error"  # 错误
 
 
+class LaserState(Enum):
+    IDLE = "idle"
+    ON = "on"
+    OFF = "off"
+
+
 class StateMachine:
     """状态机 - 管理所有状态转换"""
 
@@ -43,6 +49,8 @@ class StateMachine:
         self._wifi_state = WiFiState.UNCONFIGURED
         self._device_state = DeviceState.IDLE
 
+        self._laser_state = LaserState.IDLE
+
         # 线程锁（使用 RLock 避免死锁）
         self._lock = RLock()
 
@@ -50,6 +58,31 @@ class StateMachine:
         self._ble_callbacks = []
         self._wifi_callbacks = []
         self._device_callbacks = []
+
+        self._laser_callbacks = []
+
+
+
+    # 串口状态读写
+    @property
+    def laser_state(self) -> LaserState:
+        with self._lock:
+            return self._laser_state
+
+    def set_laser_state(self, new_state: LaserState):
+        with self._lock:
+            if self._laser_state != new_state:
+                old = self._laser_state
+                self._laser_state = new_state
+                logger.info(f"激光状态 {old.value} -> {new_state.value}")
+                for cb in self._laser_callbacks:
+                    try:
+                        cb(old, new_state)
+                    except Exception as e:
+                        logger.error(f"激光状态回调异常 {e}")
+
+    def on_laser_state_change(self, callback):
+        self._laser_callbacks.append(callback)
 
     # ==================== BLE 状态管理 ====================
 
@@ -177,12 +210,15 @@ class StateMachine:
             device_state = self.device_state.value
             logger.info(f"device_state 获取完成: {device_state}")
             logger.info("准备调用 is_ready_for_capture()")
+            laser_state = self.laser_state.value  # ✅ 正确：读取类属性 self.laser_state
+            logger.info(f"laser_state 获取完成: {laser_state}")
             ready = self.is_ready_for_capture()
             logger.info(f"is_ready_for_capture() 完成: {ready}")
             result = {
                 "ble_state": ble_state,
                 "wifi_state": wifi_state,
                 "device_state": device_state,
+                "laser_state": laser_state,
                 "ready_for_capture": ready,
             }
             logger.info(f"get_status_dict 完成: {result}")

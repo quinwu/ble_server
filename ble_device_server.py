@@ -20,8 +20,9 @@ from ble_gatt_server import BLEGattServer
 from camera_controller import CameraController
 from cloud_uploader import CloudUploader
 from config_manager import ConfigManager
-from state_machine import BLEState, DeviceState, StateMachine, WiFiState
+from state_machine import BLEState, DeviceState, StateMachine, WiFiState, LaserState
 from wifi_manager import WiFiManager
+from serial_manager import SerialManager, SERIAL_PORT, BAUD
 
 
 class BLEDeviceServer:
@@ -37,12 +38,22 @@ class BLEDeviceServer:
         Path(self.camera_save_dir).mkdir(parents=True, exist_ok=True)
         self.uploader = CloudUploader(upload_url=self.config.get_cloud_url())
 
+
+        # ========== 新增串口初始化 ==========
+        # 串口参数可放到config.json，这里硬编码方便调试
+        self.serial_mgr = SerialManager(port=SERIAL_PORT, baudrate=BAUD)
+        # 注册串口上报回调（串口收到on/off触发）
+        self.serial_mgr.set_state_callback(self._on_serial_state_from_uart)
+        # 监听串口状态变化，同步到状态机
+        self.state_machine.on_laser_state_change(self._on_laser_state_change)
+
         # BLE GATT Server
         device_info = self.config.get_device_info()
         self.ble_server = BLEGattServer(
             on_wifi_config=self._on_wifi_config,
             on_cloud_config=self._on_cloud_config,
             on_capture=self._on_capture_command,
+            on_laser_control=self._on_laser_control,
             device_name=device_info.get("name", "BLE-Device"),
         )
 
@@ -63,6 +74,8 @@ class BLEDeviceServer:
             self.running = True
 
             self._init_wifi()
+
+            self.serial_mgr.start()
 
             self.state_machine.set_ble_state(BLEState.ADVERTISING)
 
@@ -86,10 +99,35 @@ class BLEDeviceServer:
         try:
             self.wifi_manager.stop_monitoring()
             self.ble_server.stop()
+            self.serial_mgr.stop()
         except Exception as e:
             logger.error(f"停止服务异常: {e}")
 
         logger.info("BLE Device Server 已停止")
+
+
+    # =================== 激光 回调处理 ====================
+    def _on_laser_control(self, switch_val: str):
+        """小程序下发 on/off，转发串口指令"""
+        logger.info(f"小程序下发串口开关指令: {switch_val}")
+        if switch_val == "on":
+            self.serial_mgr.send_cmd("cmd1")
+        elif switch_val == "off":
+            self.serial_mgr.send_cmd("cmd0")
+
+    def _on_serial_state_from_uart(self, state: str):
+        """串口硬件返回on/off，更新状态机并推送小程序"""
+        if state == "on":
+            self.state_machine.set_laser_state(LaserState.ON)
+        elif state == "off":
+            self.state_machine.set_laser_state(LaserState.OFF)
+
+    def _on_laser_state_change(self, old_state, new_state):
+        """串口状态变化，通过BLE Notify推送小程序"""
+        logger.info(f"串口开关状态变更: {old_state.value} -> {new_state.value}")
+        self._notify_status({"laser_state": new_state.value})
+
+    
 
     # ==================== BLE 回调处理 ====================
 

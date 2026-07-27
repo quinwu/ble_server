@@ -31,6 +31,8 @@ CHAR_CLOUD_CONFIG_UUID = "12345678-1234-5678-1234-56789abcdef2"
 CHAR_CAPTURE_COMMAND_UUID = "12345678-1234-5678-1234-56789abcdef3"
 CHAR_STATUS_NOTIFY_UUID = "12345678-1234-5678-1234-56789abcdef4"
 
+CHAR_LASER_CONTROL_UUID = "12345678-1234-5678-1234-56789abcdef5"
+
 # BlueZ D-Bus 路径
 BLUEZ_SERVICE_NAME = "org.bluez"
 GATT_MANAGER_IFACE = "org.bluez.GattManager1"
@@ -226,6 +228,26 @@ class JsonWriteCharacteristic(Characteristic):
 
     def _handle_json(self, config: dict) -> None:
         raise NotImplementedError
+
+
+# 串口控制
+class LaserControlCharacteristic(JsonWriteCharacteristic):
+    def __init__(self, bus, index, service, on_laser_control: Callable):
+        super().__init__(bus, index, CHAR_LASER_CONTROL_UUID, service)
+        self.on_laser_control = on_laser_control
+
+    def _config_label(self) -> str:
+        return "串口开关指令"
+
+    def _handle_json(self, config: dict) -> None:
+        cmd = config.get("switch", "").lower()
+        device = config.get("device", "unknown")
+        self.service.client_device_model = device
+        if cmd in ["on", "off"]:
+            if self.on_laser_control:
+                self.on_laser_control(cmd)
+        else:
+            raise ValueError(f"未知串口开关指令: {cmd}，仅支持on/off")
 
 
 class WiFiConfigCharacteristic(JsonWriteCharacteristic):
@@ -492,16 +514,17 @@ class StatusNotifyCharacteristic(Characteristic):
 
 
 class DeviceControlService(Service):
-    def __init__(self, bus, index, on_wifi_config: Callable, on_cloud_config: Callable, on_capture: Callable):
+    def __init__(self, bus, index, on_wifi_config: Callable, on_cloud_config: Callable, on_capture: Callable, on_laser_control: Callable):
         super().__init__(bus, index, DEVICE_CONTROL_SERVICE_UUID, True)
 
         # 添加 Characteristics
         self.add_characteristic(WiFiConfigCharacteristic(bus, 0, self, on_wifi_config))
         self.add_characteristic(CloudConfigCharacteristic(bus, 1, self, on_cloud_config))
         self.add_characteristic(CaptureCommandCharacteristic(bus, 2, self, on_capture))
+        self.add_characteristic(LaserControlCharacteristic(bus, 3, self, on_laser_control))
 
         # 状态通知 Characteristic（需要引用以便发送通知）
-        self.status_notify_char = StatusNotifyCharacteristic(bus, 3, self)
+        self.status_notify_char = StatusNotifyCharacteristic(bus, 4, self)
         self.add_characteristic(self.status_notify_char)
 
         self.client_device_model = "unknown"
@@ -550,7 +573,7 @@ class Advertisement(dbus.service.Object):
 
 class BLEGattServer:
     def __init__(
-        self, on_wifi_config: Callable, on_cloud_config: Callable, on_capture: Callable, device_name: str = "BLE-Device"
+        self, on_wifi_config: Callable, on_cloud_config: Callable, on_capture: Callable, on_laser_control: Callable, device_name: str = "BLE-Device"
     ):
         # 初始化 D-Bus
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
@@ -560,6 +583,7 @@ class BLEGattServer:
         self.on_wifi_config = on_wifi_config
         self.on_cloud_config = on_cloud_config
         self.on_capture = on_capture
+        self.on_laser_control = on_laser_control
 
         # 缓存 MAC 地址
         self._mac_address = None
@@ -568,7 +592,7 @@ class BLEGattServer:
         self.app = Application(self.bus)
 
         # 创建 Service
-        self.service = DeviceControlService(self.bus, 0, on_wifi_config, on_cloud_config, on_capture)
+        self.service = DeviceControlService(self.bus, 0, on_wifi_config, on_cloud_config, on_capture, on_laser_control)
         self.app.add_service(self.service)
 
         # 创建 Advertisement
